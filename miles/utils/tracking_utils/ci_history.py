@@ -6,12 +6,18 @@ line-by-line). The record is a pure
 process-to-harness handoff: it carries only ``{metric_key: [(step, value), ...]}``
 series, never identity (no test path), never reads wandb, and never writes to any
 cloud. Reduction and gating happen in a later step that consumes these records.
+
+Capture never blocks the run on metric content: non-finite values (NaN/±Inf) are
+recorded faithfully, serialized as the string markers ``"NaN"`` / ``"Infinity"`` /
+``"-Infinity"`` so every line stays strict JSON (the gate-side reader decodes them).
+Only a wrong type (non-int/float) — an authoring bug — fails loud here.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import uuid
@@ -35,6 +41,16 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
 
 # Env var naming the directory the harness assigns for this run's records.
 RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
+
+
+def _encode_value(value: float) -> float | str:
+    # Bare NaN/Infinity from json.dumps is not strict JSON; markers keep the
+    # record parseable by any reader.
+    if math.isfinite(value):
+        return value
+    if math.isnan(value):
+        return "NaN"
+    return "Infinity" if value > 0 else "-Infinity"
 
 
 class CiHistoryBackend(TrackingBackend):
@@ -101,7 +117,7 @@ class CiHistoryBackend(TrackingBackend):
             for key, points in self._series.items():
                 line = {
                     "metric": key,
-                    "series": [[step, value] for step, value in points],
+                    "series": [[step, _encode_value(value)] for step, value in points],
                 }
-                f.write(json.dumps(line) + "\n")
+                f.write(json.dumps(line, allow_nan=False) + "\n")
         os.replace(tmp_path, self._record_path)

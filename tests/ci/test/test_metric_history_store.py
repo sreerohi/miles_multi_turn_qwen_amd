@@ -80,6 +80,29 @@ def test_write_then_recent_returns_written_values(store):
     assert got == [0.83, 0.81]
 
 
+def test_write_run_rejects_non_finite_before_persisting(store):
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="non-finite"):
+            _write(
+                store,
+                created_at="2026-06-01T00:00:00+00:00",
+                values=[MetricSample("reward_mean", None, 0.5), MetricSample("reward_mean", "v1|last", bad)],
+            )
+
+    # Validation runs before any insert: the finite sibling sample must not
+    # have leaked in as a trusted row.
+    got = store.recent_trusted_values(
+        IDENTITY.test_path,
+        IDENTITY.backend,
+        IDENTITY.suite,
+        "reward_mean",
+        None,
+        IDENTITY.test_file_hash,
+        limit=10,
+    )
+    assert got == []
+
+
 def test_limit_caps_and_orders_newest_first(store):
     for i, created in enumerate(
         ["2026-06-01T00:00:00+00:00", "2026-06-02T00:00:00+00:00", "2026-06-03T00:00:00+00:00"]

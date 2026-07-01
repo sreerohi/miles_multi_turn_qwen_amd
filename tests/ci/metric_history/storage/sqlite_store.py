@@ -17,7 +17,13 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-from tests.ci.metric_history.storage.store import MetricHistoryStore, MetricSample, RunIdentity, RunProvenance
+from tests.ci.metric_history.storage.store import (
+    MetricHistoryStore,
+    MetricSample,
+    RunIdentity,
+    RunProvenance,
+    validate_finite_values,
+)
 
 # The local/offline schema: the two tables and the composite baseline index.
 # SQLite stores the same logical columns with its dynamic typing.
@@ -93,6 +99,7 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         trusted: bool,
         values: list[MetricSample],
     ) -> str:
+        validate_finite_values(values)
         run_id = uuid.uuid4().hex
         with self._conn:
             self._conn.execute(

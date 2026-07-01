@@ -29,6 +29,7 @@ silently comparing against measurements of older code.
 from __future__ import annotations
 
 import abc
+import math
 from dataclasses import dataclass
 
 
@@ -75,6 +76,16 @@ class RunProvenance:
     ref: str | None
 
 
+def validate_finite_values(values: list[MetricSample]) -> None:
+    """Reject non-finite sample values before a backend persists anything."""
+    for sample in values:
+        if not math.isfinite(sample.value):
+            raise ValueError(
+                f"non-finite metric value {sample.value!r} for {sample.metric_key!r} "
+                f"(sub_label={sample.sub_label!r}); non-finite values never enter the store"
+            )
+
+
 class MetricHistoryStore(abc.ABC):
     """Abstract metric-history store.
 
@@ -98,6 +109,11 @@ class MetricHistoryStore(abc.ABC):
         ``created_at`` is an ISO-8601 timestamp string (timestamptz on the
         server). The store assigns and returns the ``run_id``; callers do not
         supply it.
+
+        Raises ``ValueError`` if any sample's value is non-finite (NaN/±Inf),
+        before anything is persisted: the store is the write boundary where
+        validity is enforced, so non-finite values never enter a baseline.
+        Implementations enforce this via :func:`validate_finite_values`.
         """
 
     @abc.abstractmethod

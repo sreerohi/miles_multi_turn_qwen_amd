@@ -92,6 +92,34 @@ def test_non_numeric_target_metric_errors_without_partial_capture(tmp_path, monk
     assert by_metric["train/grad_norm"] == [[1, 2.0]]
 
 
+def _reject_bare_constant(name):
+    raise AssertionError(f"bare {name} token in record; non-finite must be a string marker")
+
+
+def test_non_finite_values_recorded_as_strict_json_markers(tmp_path, monkeypatch):
+    monkeypatch.setenv(RECORD_DIR_ENV, str(tmp_path))
+    backend = CiHistoryBackend()
+    backend.init(object(), primary=False)
+
+    backend.log({"train/grad_norm": 1.5, "train/step": 0}, step=0)
+    backend.log({"train/grad_norm": float("nan"), "train/step": 1}, step=1)
+    backend.log({"train/ppo_kl": float("inf"), "train/step": 1}, step=1)
+    backend.log({"rollout/raw_reward": float("-inf"), "rollout/step": 0}, step=0)
+    backend.finish()
+
+    path = os.path.join(tmp_path, os.listdir(tmp_path)[0])
+    # Strict JSON: parse_constant fires only on bare NaN/Infinity tokens.
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                json.loads(line, parse_constant=_reject_bare_constant)
+
+    by_metric = {r["metric"]: r["series"] for r in _read_ndjson(path)}
+    assert by_metric["train/grad_norm"] == [[0, 1.5], [1, "NaN"]]
+    assert by_metric["train/ppo_kl"] == [[1, "Infinity"]]
+    assert by_metric["rollout/raw_reward"] == [[0, "-Infinity"]]
+
+
 def test_record_carries_no_identity(tmp_path, monkeypatch):
     monkeypatch.setenv(RECORD_DIR_ENV, str(tmp_path))
     backend = CiHistoryBackend()
