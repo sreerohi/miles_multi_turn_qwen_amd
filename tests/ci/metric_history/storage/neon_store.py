@@ -1,11 +1,12 @@
 # doc-dev: docs/ci/03-metric-history-gate.md
 """Deferred Neon (hosted Postgres) backend for the metric-history store.
 
-This is an intentional placeholder. The hosted backend is not wired this round:
-no Postgres driver is added to ``requirements.txt`` and nothing here opens a
-connection. The class exists so the gate can name its production backend and so
-the connection contract (the ``NEON_DATABASE_URL`` env var, provisioned
-out-of-band) is documented in one place.
+* An intentional placeholder: the hosted backend is not wired this round -- no
+  Postgres driver is added to ``requirements.txt`` and nothing here opens a
+  connection.
+* The class exists so the gate can name its production backend and so the
+  connection contract (the ``NEON_DATABASE_URL`` env var, provisioned
+  out-of-band) is documented in one place.
 
 Implementation notes for whoever lands the real driver:
 

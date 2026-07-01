@@ -1,16 +1,30 @@
 """CI metric-history collection backend.
 
-Captures a fixed set of training/rollout metrics from the live process into an
-NDJSON record, atomically rewritten as a full snapshot on each update (not appended
-line-by-line). The record is a pure
-process-to-harness handoff: it carries only ``{metric_key: [(step, value), ...]}``
-series, never identity (no test path), never reads wandb, and never writes to any
-cloud. Reduction and gating happen in a later step that consumes these records.
+* Captures the fixed :data:`TARGET_METRIC_KEYS` whitelist of training/rollout
+  metrics from the live process into one NDJSON record file; keys outside the
+  whitelist are never recorded.
+* Collection is on only when the harness sets :data:`RECORD_DIR_ENV`
+  (``MILES_CI_GATE_RECORD_DIR``); without it ``init()`` leaves the backend a
+  no-op.
+* The record is a pure process-to-harness handoff: raw unreduced
+  ``{"metric": key, "series": [[step, value], ...]}`` lines, no identity (no
+  test path), nothing read from wandb, nothing written to any cloud. Reduction
+  and gating happen in a later step that consumes these records.
+* Every ``log()`` atomically rewrites the whole file as a fresh snapshot (temp
+  file + rename), not an append; a process that never calls ``finish()`` still
+  leaves a complete record.
+* Each backend instance owns a distinct file keyed by pid + a fresh uuid, so
+  concurrent processes never clobber each other's records.
 
-Capture never blocks the run on metric content: non-finite values (NaN/±Inf) are
-recorded faithfully, serialized as the string markers ``"NaN"`` / ``"Infinity"`` /
-``"-Infinity"`` so every line stays strict JSON (the gate-side reader decodes them).
-Only a wrong type (non-int/float) — an authoring bug — fails loud here.
+Caveats:
+
+* Capture never blocks the run on metric content: non-finite values (NaN/±Inf)
+  are recorded faithfully, serialized as the string markers ``"NaN"`` /
+  ``"Infinity"`` / ``"-Infinity"`` so every line stays strict JSON (the
+  gate-side reader decodes them).
+* A non-numeric value (bool/str/...) at a whitelisted key raises ``TypeError``
+  in the logging process -- an authoring error fails loudly instead of being
+  dropped.
 """
 
 from __future__ import annotations

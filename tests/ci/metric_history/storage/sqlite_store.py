@@ -1,15 +1,16 @@
 # doc-dev: docs/ci/03-metric-history-gate.md
 """SQLite-backed :class:`MetricHistoryStore` for offline use and tests.
 
-This backend keeps no network dependency and runs entirely in-process; an
-in-memory database (``:memory:``) makes it a drop-in fixture for unit tests.
-Its query and write semantics mirror the hosted Postgres backend so that tests
-exercising this implementation validate the contract the gate relies on in
-production.
-
-This module owns a small local schema literal for tests; production Postgres
-setup is out-of-band until the hosted backend is implemented. The store never
-issues DDL on the read/write path.
+* No network dependency; the store runs entirely in-process. An in-memory
+  database (``:memory:``) makes it a drop-in fixture for unit tests.
+* Query and write semantics mirror the hosted Postgres backend, so tests
+  exercising this implementation validate the contract the gate relies on in
+  production — including the authoritative baseline query with its
+  ``IS NOT DISTINCT FROM`` NULL-equality on ``sub_label``.
+* This module owns a small local schema literal for tests; production Postgres
+  setup is out-of-band until the hosted backend is implemented.
+* Schema is applied at construction (``apply_schema``), never on the
+  read/write path.
 """
 
 from __future__ import annotations

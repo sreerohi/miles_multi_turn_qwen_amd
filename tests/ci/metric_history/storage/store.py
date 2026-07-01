@@ -1,29 +1,26 @@
 # doc-dev: docs/ci/03-metric-history-gate.md
 """Storage contract for the CI metric-history regression gate.
 
-The gate compares a candidate run's metrics against a baseline assembled from
-the most recent *trusted* runs that share the same test identity. This module
-defines that storage contract and nothing else: it does not decide what counts
-as a regression, does not read the candidate run, and does not talk to CI.
-
-Two normalized tables back the contract:
-
-* ``runs`` -- one row per CI execution of a test, holding identity
-  (test_path, backend, suite, test_file_hash), provenance (commit_sha,
-  pr_number, github_run_id, github_run_attempt, event_name, ref), the
-  ``created_at`` timestamp, and the run-level ``trusted`` flag.
+* The gate compares a candidate run's metrics against a baseline assembled
+  from the most recent *trusted* runs that share the same test identity.
+* Two normalized tables back the contract. ``runs`` -- one row per CI
+  execution of a test, holding identity (test_path, backend, suite,
+  test_file_hash), provenance (commit_sha, pr_number, github_run_id,
+  github_run_attempt, event_name, ref), the ``created_at`` timestamp, and
+  the run-level ``trusted`` flag.
 * ``metric_values`` -- the (metric_key, sub_label, value) measurements
   produced by a run, keyed back to ``runs`` by ``run_id``.
-
-``trusted`` lives on the run, not on the metric: a run is trusted as a whole
-or not at all, so revoking trust drops every metric the run contributed in one
-operation.
-
-``test_file_hash`` is the sha256 of the test file's contents. It is computed by
-the caller; the store only stores and matches on it. Two runs of the same
-``test_path`` with different file contents have different hashes and therefore
-never share a baseline -- a test edit starts a fresh history rather than
-silently comparing against measurements of older code.
+* ``trusted`` lives on the run, not on the metric: a run is trusted as a
+  whole or not at all, so revoking trust drops every metric the run
+  contributed in one operation.
+* ``test_file_hash`` is the sha256 of the test file's contents, computed by
+  the caller; the store only stores and matches on it. Runs of the same
+  ``test_path`` with different file contents get different hashes and never
+  share a baseline -- a test edit starts a fresh history rather than
+  silently comparing against measurements of older code.
+* This module defines that storage contract and nothing else: it does not
+  decide what counts as a regression, does not read the candidate run, and
+  does not talk to CI.
 """
 
 from __future__ import annotations

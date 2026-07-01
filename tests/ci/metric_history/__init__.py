@@ -1,8 +1,10 @@
 """Metric-history storage layer for the CI regression gate.
 
-Public surface: the :class:`MetricHistoryStore` contract, its record types, the
-offline :class:`SQLiteMetricHistoryStore`, and the deferred
-:class:`NeonMetricHistoryStore`.
+* One import surface for consumers, re-exporting the :class:`MetricHistoryStore`
+  contract and its record types (:class:`MetricSample`, :class:`RunIdentity`,
+  :class:`RunProvenance`).
+* The two backends: offline :class:`SQLiteMetricHistoryStore` and the deferred
+  :class:`NeonMetricHistoryStore` placeholder, plus :data:`NEON_DATABASE_URL_ENV`.
 """
 
 from tests.ci.metric_history.storage.neon_store import NEON_DATABASE_URL_ENV, NeonMetricHistoryStore
