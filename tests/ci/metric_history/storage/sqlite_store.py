@@ -5,8 +5,8 @@
   database (`:memory:`) makes it a drop-in fixture for unit tests.
 * Query and write semantics mirror the hosted Postgres backend, so tests
   exercising this implementation validate the contract the gate relies on in
-  production — including the authoritative baseline query with its
-  `IS NOT DISTINCT FROM` NULL-equality on `sub_label`.
+  production — including the authoritative baseline query's plain-equality
+  match on the `(metric_key, extractor_key, rule_key, step)` coordinate.
 * This module owns a small local schema literal for tests; production Postgres
   setup is out-of-band until the hosted backend is implemented.
 * Schema is applied at construction (`apply_schema`), never on the
@@ -46,18 +46,20 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE TABLE IF NOT EXISTS metric_values (
-    run_id      TEXT NOT NULL REFERENCES runs(run_id),
-    metric_key  TEXT NOT NULL,
-    sub_label   TEXT,
-    value       REAL NOT NULL
+    run_id         TEXT NOT NULL REFERENCES runs(run_id),
+    metric_key     TEXT NOT NULL,
+    extractor_key  TEXT NOT NULL,
+    rule_key       TEXT NOT NULL,
+    step           INTEGER NOT NULL,
+    value          REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS runs_baseline_idx
     ON runs (test_path, backend, suite, test_file_hash, trusted, created_at DESC);
 """
 
-# Mirrors the authoritative baseline query. `IS NOT DISTINCT FROM` gives
-# NULL-equality for sub_label so a NULL filter matches the unlabeled rows.
+# Mirrors the authoritative baseline query: every coordinate column is
+# NOT NULL, so the whole match is plain equality.
 _BASELINE_SQL = """
 SELECT mv.value
 FROM metric_values mv
@@ -66,7 +68,9 @@ WHERE r.test_path = ?
   AND r.backend = ?
   AND r.suite = ?
   AND mv.metric_key = ?
-  AND mv.sub_label IS NOT DISTINCT FROM ?
+  AND mv.extractor_key = ?
+  AND mv.rule_key = ?
+  AND mv.step = ?
   AND r.test_file_hash = ?
   AND r.trusted = 1
 ORDER BY r.created_at DESC
@@ -128,8 +132,9 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
                 ),
             )
             self._conn.executemany(
-                "INSERT INTO metric_values (run_id, metric_key, sub_label, value) VALUES (?, ?, ?, ?)",
-                [(run_id, s.metric_key, s.sub_label, s.value) for s in values],
+                "INSERT INTO metric_values (run_id, metric_key, extractor_key, rule_key, step, value)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [(run_id, s.metric_key, s.extractor_key, s.rule_key, s.step, s.value) for s in values],
             )
         return run_id
 
@@ -139,13 +144,15 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        sub_label: str | None,
+        extractor_key: str,
+        rule_key: str,
+        step: int,
         test_file_hash: str,
         limit: int,
     ) -> list[float]:
         rows = self._conn.execute(
             _BASELINE_SQL,
-            (test_path, backend, suite, metric_key, sub_label, test_file_hash, limit),
+            (test_path, backend, suite, metric_key, extractor_key, rule_key, step, test_file_hash, limit),
         ).fetchall()
         return [row[0] for row in rows]
 

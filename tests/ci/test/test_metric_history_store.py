@@ -35,6 +35,33 @@ PROVENANCE = RunProvenance(
     ref="refs/pull/42/merge",
 )
 
+# Canonical-JSON declaration keys, as the parser would derive them from a
+# test file's literal extractor / constraint dicts.
+LAST_EXTRACTOR = '{"name":"last"}'
+STEPS_EXTRACTOR = '{"name":"steps","steps":[0,1]}'
+REL_RULE = '{"name":"rel","rel":0.2}'
+ABS_RULE = '{"abs_floor":0.02,"name":"abs"}'
+
+
+def _sample(metric_key, value, *, extractor_key=LAST_EXTRACTOR, rule_key=REL_RULE, step=-1):
+    return MetricSample(metric_key, extractor_key, rule_key, step, value)
+
+
+def _recent(
+    store, metric_key, *, extractor_key=LAST_EXTRACTOR, rule_key=REL_RULE, step=-1, identity=IDENTITY, limit=10
+):
+    return store.recent_trusted_values(
+        identity.test_path,
+        identity.backend,
+        identity.suite,
+        metric_key,
+        extractor_key,
+        rule_key,
+        step,
+        identity.test_file_hash,
+        limit,
+    )
+
 
 @pytest.fixture
 def store():
@@ -59,25 +86,16 @@ def test_write_then_recent_returns_written_values(store):
     _write(
         store,
         created_at="2026-06-01T00:00:00+00:00",
-        values=[MetricSample("reward_mean", None, 0.81)],
+        values=[_sample("reward_mean", 0.81)],
     )
     _write(
         store,
         created_at="2026-06-02T00:00:00+00:00",
-        values=[MetricSample("reward_mean", None, 0.83)],
+        values=[_sample("reward_mean", 0.83)],
     )
 
-    got = store.recent_trusted_values(
-        IDENTITY.test_path,
-        IDENTITY.backend,
-        IDENTITY.suite,
-        "reward_mean",
-        None,
-        IDENTITY.test_file_hash,
-        limit=10,
-    )
     # Newest run first.
-    assert got == [0.83, 0.81]
+    assert _recent(store, "reward_mean") == [0.83, 0.81]
 
 
 def test_write_run_rejects_non_finite_before_persisting(store):
@@ -86,44 +104,26 @@ def test_write_run_rejects_non_finite_before_persisting(store):
             _write(
                 store,
                 created_at="2026-06-01T00:00:00+00:00",
-                values=[MetricSample("reward_mean", None, 0.5), MetricSample("reward_mean", "v1|last", bad)],
+                values=[_sample("reward_mean", 0.5), _sample("reward_mean", bad, step=0)],
             )
 
     # Validation runs before any insert: the finite sibling sample must not
     # have leaked in as a trusted row.
-    got = store.recent_trusted_values(
-        IDENTITY.test_path,
-        IDENTITY.backend,
-        IDENTITY.suite,
-        "reward_mean",
-        None,
-        IDENTITY.test_file_hash,
-        limit=10,
-    )
-    assert got == []
+    assert _recent(store, "reward_mean") == []
 
 
 def test_limit_caps_and_orders_newest_first(store):
     for i, created in enumerate(
         ["2026-06-01T00:00:00+00:00", "2026-06-02T00:00:00+00:00", "2026-06-03T00:00:00+00:00"]
     ):
-        _write(store, created_at=created, values=[MetricSample("reward_mean", None, float(i))])
+        _write(store, created_at=created, values=[_sample("reward_mean", float(i))])
 
-    got = store.recent_trusted_values(
-        IDENTITY.test_path,
-        IDENTITY.backend,
-        IDENTITY.suite,
-        "reward_mean",
-        None,
-        IDENTITY.test_file_hash,
-        limit=2,
-    )
-    assert got == [2.0, 1.0]
+    assert _recent(store, "reward_mean", limit=2) == [2.0, 1.0]
 
 
 def test_identity_isolation(store):
     # Reference run under the canonical identity.
-    _write(store, created_at="2026-06-01T00:00:00+00:00", values=[MetricSample("reward_mean", None, 0.5)])
+    _write(store, created_at="2026-06-01T00:00:00+00:00", values=[_sample("reward_mean", 0.5)])
 
     # Same metric, but each of these differs in exactly one identity field.
     other_backend = RunIdentity(IDENTITY.test_path, "fsdp", IDENTITY.suite, IDENTITY.test_file_hash)
@@ -135,87 +135,67 @@ def test_identity_isolation(store):
             store,
             identity=ident,
             created_at="2026-06-02T00:00:00+00:00",
-            values=[MetricSample("reward_mean", None, 9.9)],
+            values=[_sample("reward_mean", 9.9)],
         )
 
     # Baseline for the canonical identity sees only its own single value.
-    got = store.recent_trusted_values(
-        IDENTITY.test_path,
-        IDENTITY.backend,
-        IDENTITY.suite,
-        "reward_mean",
-        None,
-        IDENTITY.test_file_hash,
-        limit=10,
-    )
-    assert got == [0.5]
+    assert _recent(store, "reward_mean") == [0.5]
 
 
-def test_sub_label_null_is_distinct_from_labeled(store):
-    # One unlabeled value and two labeled values under the same metric_key.
+def test_coordinate_isolation(store):
+    # Four values under one metric_key; each non-base row differs from the
+    # base coordinate in exactly one coordinate column.
     _write(
         store,
         created_at="2026-06-01T00:00:00+00:00",
         values=[
-            MetricSample("pass_rate", None, 0.70),
-            MetricSample("pass_rate", "shard-0", 0.60),
-            MetricSample("pass_rate", "shard-1", 0.80),
+            _sample("pass_rate", 0.70),
+            _sample("pass_rate", 0.60, extractor_key=STEPS_EXTRACTOR, step=0),
+            _sample("pass_rate", 0.80, rule_key=ABS_RULE),
+            _sample("pass_rate", 0.90, step=0),
         ],
     )
 
-    # NULL filter matches only the unlabeled measurement.
-    unlabeled = store.recent_trusted_values(
-        IDENTITY.test_path, IDENTITY.backend, IDENTITY.suite, "pass_rate", None, IDENTITY.test_file_hash, limit=10
-    )
-    assert unlabeled == [0.70]
-
-    # A specific label matches only that label, never the unlabeled row.
-    shard0 = store.recent_trusted_values(
-        IDENTITY.test_path, IDENTITY.backend, IDENTITY.suite, "pass_rate", "shard-0", IDENTITY.test_file_hash, limit=10
-    )
-    assert shard0 == [0.60]
+    # Each exact coordinate matches only its own row: plain equality on every
+    # column, no cross-matching.
+    assert _recent(store, "pass_rate") == [0.70]
+    assert _recent(store, "pass_rate", extractor_key=STEPS_EXTRACTOR, step=0) == [0.60]
+    assert _recent(store, "pass_rate", rule_key=ABS_RULE) == [0.80]
+    assert _recent(store, "pass_rate", step=0) == [0.90]
 
 
 def test_mark_untrusted_by_run_id_excludes_immediately(store):
-    keep = _write(store, created_at="2026-06-01T00:00:00+00:00", values=[MetricSample("reward_mean", None, 0.5)])
-    drop = _write(store, created_at="2026-06-02T00:00:00+00:00", values=[MetricSample("reward_mean", None, 0.9)])
+    keep = _write(store, created_at="2026-06-01T00:00:00+00:00", values=[_sample("reward_mean", 0.5)])
+    drop = _write(store, created_at="2026-06-02T00:00:00+00:00", values=[_sample("reward_mean", 0.9)])
 
     affected = store.mark_untrusted(run_id=drop)
     assert affected == 1
 
-    got = store.recent_trusted_values(
-        IDENTITY.test_path, IDENTITY.backend, IDENTITY.suite, "reward_mean", None, IDENTITY.test_file_hash, limit=10
-    )
     # No rebaseline step: the dropped run is gone from the baseline on the very
     # next query, the kept run remains.
-    assert got == [0.5]
+    assert _recent(store, "reward_mean") == [0.5]
     assert keep != drop
 
 
 def test_mark_untrusted_by_github_run_id(store):
     prov = RunProvenance("c1", None, 7777, 1, "push", "refs/heads/main")
-    _write(store, provenance=prov, created_at="2026-06-01T00:00:00+00:00", values=[MetricSample("m", None, 1.0)])
-    _write(store, provenance=prov, created_at="2026-06-02T00:00:00+00:00", values=[MetricSample("m", None, 2.0)])
+    _write(store, provenance=prov, created_at="2026-06-01T00:00:00+00:00", values=[_sample("m", 1.0)])
+    _write(store, provenance=prov, created_at="2026-06-02T00:00:00+00:00", values=[_sample("m", 2.0)])
 
     affected = store.mark_untrusted(github_run_id=7777)
     assert affected == 2
-    assert (
-        store.recent_trusted_values(
-            IDENTITY.test_path, IDENTITY.backend, IDENTITY.suite, "m", None, IDENTITY.test_file_hash, limit=10
-        )
-        == []
-    )
+    assert _recent(store, "m") == []
 
 
 def test_mark_untrusted_by_commit_sha(store):
     prov = RunProvenance("badc0de", 5, 1, 1, "pull_request", "refs/pull/5/merge")
-    _write(store, provenance=prov, created_at="2026-06-01T00:00:00+00:00", values=[MetricSample("m", None, 1.0)])
+    _write(store, provenance=prov, created_at="2026-06-01T00:00:00+00:00", values=[_sample("m", 1.0)])
     affected = store.mark_untrusted(commit_sha="badc0de")
     assert affected == 1
 
 
 def test_mark_untrusted_is_idempotent(store):
-    rid = _write(store, created_at="2026-06-01T00:00:00+00:00", values=[MetricSample("m", None, 1.0)])
+    rid = _write(store, created_at="2026-06-01T00:00:00+00:00", values=[_sample("m", 1.0)])
     assert store.mark_untrusted(run_id=rid) == 1
     # Already untrusted -> no rows change.
     assert store.mark_untrusted(run_id=rid) == 0
@@ -229,18 +209,14 @@ def test_mark_untrusted_requires_exactly_one_key(store):
 
 
 def test_untrusted_run_never_in_baseline(store):
-    _write(store, created_at="2026-06-01T00:00:00+00:00", trusted=False, values=[MetricSample("m", None, 5.0)])
-    assert (
-        store.recent_trusted_values(
-            IDENTITY.test_path, IDENTITY.backend, IDENTITY.suite, "m", None, IDENTITY.test_file_hash, limit=10
-        )
-        == []
-    )
+    _write(store, created_at="2026-06-01T00:00:00+00:00", trusted=False, values=[_sample("m", 5.0)])
+    assert _recent(store, "m") == []
 
 
 def test_baseline_sql_matches_authoritative_shape():
     # Guard against drift from the authoritative query: identity predicates,
-    # NULL-equality on sub_label, trusted filter, created_at DESC, LIMIT.
+    # plain equality on every coordinate column, trusted filter,
+    # created_at DESC, LIMIT.
     from tests.ci.metric_history.storage.sqlite_store import _BASELINE_SQL
 
     sql = re.sub(r"\s+", " ", _BASELINE_SQL).strip().lower()
@@ -251,7 +227,9 @@ def test_baseline_sql_matches_authoritative_shape():
         "r.backend = ?",
         "r.suite = ?",
         "mv.metric_key = ?",
-        "mv.sub_label is not distinct from ?",
+        "mv.extractor_key = ?",
+        "mv.rule_key = ?",
+        "mv.step = ?",
         "r.test_file_hash = ?",
         "r.trusted = 1",
         "order by r.created_at desc",

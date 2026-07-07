@@ -8,8 +8,9 @@
   test_file_hash), provenance (commit_sha, pr_number, github_run_id,
   github_run_attempt, event_name, ref), the `created_at` timestamp, and
   the run-level `trusted` flag.
-* `metric_values` -- the (metric_key, sub_label, value) measurements
-  produced by a run, keyed back to `runs` by `run_id`.
+* `metric_values` -- one row per comparison-coordinate value a run produced:
+  `(metric_key, extractor_key, rule_key, step, value)`, keyed back to `runs`
+  by `run_id`.
 * `trusted` lives on the run, not on the metric: a run is trusted as a
   whole or not at all, so revoking trust drops every metric the run
   contributed in one operation.
@@ -32,16 +33,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class MetricSample:
-    """One measurement a run contributed.
+    """One comparison-coordinate value a run contributed.
 
-    `sub_label` distinguishes measurements that share a `metric_key` (e.g.
-    per-prompt or per-shard values). `None` denotes the single unlabeled
-    measurement for that key and is matched with NULL-equality semantics
-    (`IS NOT DISTINCT FROM`) rather than `=`.
+    The coordinate is the declaring gate's literal content plus the point:
+    `extractor_key` / `rule_key` are canonical JSON strings of the
+    declaration's `extractor` / `constraint` dicts exactly as written in the
+    test file; `step` is the point the value came from -- step `k`, or `-1`
+    for a whole-series reduction (e.g. a `last` extractor), which must key on
+    a constant rather than the step it happened to land on, or its history
+    would fragment across runs of different lengths.
     """
 
     metric_key: str
-    sub_label: str | None
+    extractor_key: str
+    rule_key: str
+    step: int
     value: float
 
 
@@ -79,7 +85,7 @@ def validate_finite_values(values: list[MetricSample]) -> None:
         if not math.isfinite(sample.value):
             raise ValueError(
                 f"non-finite metric value {sample.value!r} for {sample.metric_key!r} "
-                f"(sub_label={sample.sub_label!r}); non-finite values never enter the store"
+                f"(step={sample.step}); non-finite values never enter the store"
             )
 
 
@@ -120,16 +126,18 @@ class MetricHistoryStore(abc.ABC):
         backend: str,
         suite: str,
         metric_key: str,
-        sub_label: str | None,
+        extractor_key: str,
+        rule_key: str,
+        step: int,
         test_file_hash: str,
         limit: int,
     ) -> list[float]:
         """Return up to `limit` baseline values, newest run first.
 
-        Only trusted runs matching the exact identity tuple and metric
-        coordinates contribute. `sub_label` is matched with NULL-equality
-        semantics, so `None` matches the unlabeled measurement and never a
-        labeled one.
+        Only trusted runs matching the exact identity tuple and the exact
+        value coordinate `(metric_key, extractor_key, rule_key, step)`
+        contribute. Every coordinate column is NOT NULL, so matching is plain
+        equality -- no NULL-equality semantics anywhere in the query.
         """
 
     @abc.abstractmethod

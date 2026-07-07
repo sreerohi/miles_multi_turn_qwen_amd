@@ -12,9 +12,12 @@ CI keeps each test's per-metric numbers from every run in our own store and runs
 The gate compares a number only against earlier numbers of the same kind, from the same test. Two keys decide that:
 
 - **Run series** (the "same test"): `(test_path, backend, suite, test_file_hash)`. `test_file_hash` = sha256 of the test file's **contents**, so editing the test starts a fresh series. Runs differing on any field never share a baseline.
-- **Value within a run**: `(metric_key, sub_label)`. `sub_label` separates points under one key (e.g. per-step `ppo_kl` at step 0, 1, …). Step-0 `ppo_kl` is compared only against past step-0 `ppo_kl`, never against `grad_norm`.
+- **Value within a run**: `(metric_key, extractor_key, rule_key, step)` — the declaring gate's literal content plus which point:
+  - `extractor_key` / `rule_key` are canonical JSON strings (sorted keys, no whitespace) of the declaration's `extractor` / `constraint` dicts exactly as written in the test file. The key is what the author wrote — no derived encoding to learn; any edit to the declaration already resets the series via `test_file_hash`.
+  - `step` is the point the value came from: step `k` for a per-step value, `-1` for a whole-series reduction (e.g. a `last` extractor) — a reduced value keys on a constant, never the step it happened to land on, or its history would fragment across runs of different lengths.
+  - Step-0 `ppo_kl` is compared only against past step-0 `ppo_kl` — never against step 1 or `grad_norm`.
 
-The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, sub_label, test_file_hash, limit)`.
+The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, extractor_key, rule_key, step, test_file_hash, limit)`.
 
 ## Storage: two backends, two tables
 
@@ -23,13 +26,13 @@ The store's baseline query keys on exactly these (plus a `limit` for how many re
 - `recent_trusted_values(...)` returns the newest trusted values for one exact run series and one exact metric coordinate; this is the historical-gate baseline read.
 - `mark_untrusted(...)` flips matching runs to `trusted = false` by `run_id`, `github_run_id`, or `commit_sha`, so the next baseline read excludes those runs without deleting rows.
 - `runs` — one row per CI run of one series: the identity above + provenance (`commit_sha`, `pr_number`, `github_run_id`, `github_run_attempt`, `event_name`, `ref`) + `created_at` + `trusted` (run-level).
-- `metric_values` — one row per value: `run_id` FK + `(metric_key, sub_label)` + `value`.
+- `metric_values` — one row per value: `run_id` FK + `(metric_key, extractor_key, rule_key, step)` + `value`.
 - Read path: composite index `runs(test_path, backend, suite, test_file_hash, trusted, created_at DESC)`.
 - Hosted Postgres setup is out-of-band in this round: when `NeonMetricHistoryStore` is implemented, provision the equivalent two tables and application role outside this repo, and keep runtime gate code DML-only. Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
 ## The gate: two layers
 
-After a test passes, each `(metric_key, sub_label)` value is checked with `|cur - ref| > max(rel * |ref|, abs_floor)` (`rel` default `0.20`; `abs_floor` only matters for metrics near zero, e.g. step-0 `ppo_kl`).
+After a test passes, each comparison coordinate's value is checked with `|cur - ref| > max(rel * |ref|, abs_floor)` (`rel` default `0.20`; `abs_floor` only matters for metrics near zero, e.g. step-0 `ppo_kl`).
 
 - **Hard gate** — always on. `ref` = a hardcoded safety limit. Runs even with zero history; generalizes today's `--ci-<metric>` thresholds.
 - **Historical gate** — activates with ≥1 trusted point in the series. `ref` = mean of the series' trusted runs. Catches drift.
