@@ -1,8 +1,8 @@
 """Tests for the CI metric-history collection backend and harness handoff.
 
-Covers the record structure produced by ``CiHistoryBackend`` (target keys present,
+Covers the record structure produced by `CiHistoryBackend` (target keys present,
 NDJSON parseable, raw unreduced series) and the harness per-attempt record-dir
-handoff in ``tests.ci.ci_utils``.
+handoff in `tests.ci.ci_utils`.
 """
 
 import json

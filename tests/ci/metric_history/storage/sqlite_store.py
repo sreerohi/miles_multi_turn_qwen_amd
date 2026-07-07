@@ -2,14 +2,14 @@
 """SQLite-backed :class:`MetricHistoryStore` for offline use and tests.
 
 * No network dependency; the store runs entirely in-process. An in-memory
-  database (``:memory:``) makes it a drop-in fixture for unit tests.
+  database (`:memory:`) makes it a drop-in fixture for unit tests.
 * Query and write semantics mirror the hosted Postgres backend, so tests
   exercising this implementation validate the contract the gate relies on in
   production — including the authoritative baseline query with its
-  ``IS NOT DISTINCT FROM`` NULL-equality on ``sub_label``.
+  `IS NOT DISTINCT FROM` NULL-equality on `sub_label`.
 * This module owns a small local schema literal for tests; production Postgres
   setup is out-of-band until the hosted backend is implemented.
-* Schema is applied at construction (``apply_schema``), never on the
+* Schema is applied at construction (`apply_schema`), never on the
   read/write path.
 """
 
@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS runs_baseline_idx
     ON runs (test_path, backend, suite, test_file_hash, trusted, created_at DESC);
 """
 
-# Mirrors the authoritative baseline query. ``IS NOT DISTINCT FROM`` gives
+# Mirrors the authoritative baseline query. `IS NOT DISTINCT FROM` gives
 # NULL-equality for sub_label so a NULL filter matches the unlabeled rows.
 _BASELINE_SQL = """
 SELECT mv.value

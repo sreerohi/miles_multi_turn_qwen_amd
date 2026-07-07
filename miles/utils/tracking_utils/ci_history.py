@@ -4,14 +4,14 @@
   metrics from the live process into one NDJSON record file; keys outside the
   whitelist are never recorded.
 * Collection is on only when the harness sets :data:`RECORD_DIR_ENV`
-  (``MILES_CI_GATE_RECORD_DIR``); without it ``init()`` leaves the backend a
+  (`MILES_CI_GATE_RECORD_DIR`); without it `init()` leaves the backend a
   no-op.
 * The record is a pure process-to-harness handoff: raw unreduced
-  ``{"metric": key, "series": [[step, value], ...]}`` lines, no identity (no
+  `{"metric": key, "series": [[step, value], ...]}` lines, no identity (no
   test path), nothing read from wandb, nothing written to any cloud. Reduction
   and gating happen in a later step that consumes these records.
-* Every ``log()`` atomically rewrites the whole file as a fresh snapshot (temp
-  file + rename), not an append; a process that never calls ``finish()`` still
+* Every `log()` atomically rewrites the whole file as a fresh snapshot (temp
+  file + rename), not an append; a process that never calls `finish()` still
   leaves a complete record.
 * Each backend instance owns a distinct file keyed by pid + a fresh uuid, so
   concurrent processes never clobber each other's records.
@@ -19,10 +19,10 @@
 Caveats:
 
 * Capture never blocks the run on metric content: non-finite values (NaN/±Inf)
-  are recorded faithfully, serialized as the string markers ``"NaN"`` /
-  ``"Infinity"`` / ``"-Infinity"`` so every line stays strict JSON (the
+  are recorded faithfully, serialized as the string markers `"NaN"` /
+  `"Infinity"` / `"-Infinity"` so every line stays strict JSON (the
   gate-side reader decodes them).
-* A non-numeric value (bool/str/...) at a whitelisted key raises ``TypeError``
+* A non-numeric value (bool/str/...) at a whitelisted key raises `TypeError`
   in the logging process -- an authoring error fails loudly instead of being
   dropped.
 """
@@ -73,9 +73,9 @@ class CiHistoryBackend(TrackingBackend):
     Each initialized backend instance owns a distinct NDJSON file keyed by a
     fresh process-local id, so separate instances do not clobber each other.
 
-    Some logging processes may not call ``finish()``, so every ``log()`` persists
+    Some logging processes may not call `finish()`, so every `log()` persists
     a fresh snapshot of the full accumulated series. The file is the latest
-    snapshot regardless of whether ``finish()`` ever fires.
+    snapshot regardless of whether `finish()` ever fires.
     """
 
     def __init__(self) -> None:
