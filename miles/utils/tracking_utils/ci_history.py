@@ -1,7 +1,7 @@
 """CI metric-history collection backend.
 
 * Captures the fixed :data:`TARGET_METRIC_KEYS` whitelist of training/rollout
-  metrics from the live process into one NDJSON record file; keys outside the
+  metrics from the live process into one JSONL record file; keys outside the
   whitelist are never recorded.
 * Collection is on only when the harness sets :data:`RECORD_DIR_ENV`
   (`MILES_CI_GATE_RECORD_DIR`); without it `init()` leaves the backend a
@@ -70,7 +70,7 @@ def _encode_value(value: float) -> float | str:
 class CiHistoryBackend(TrackingBackend):
     """Accumulate target metrics in-process and persist the raw series to disk.
 
-    Each initialized backend instance owns a distinct NDJSON file keyed by a
+    Each initialized backend instance owns a distinct JSONL file keyed by a
     fresh process-local id, so separate instances do not clobber each other.
 
     Some logging processes may not call `finish()`, so every `log()` persists
@@ -94,7 +94,7 @@ class CiHistoryBackend(TrackingBackend):
         os.makedirs(record_dir, exist_ok=True)
         self._record_dir = record_dir
         process_id = f"{os.getpid()}-{uuid.uuid4().hex}"
-        self._record_path = os.path.join(record_dir, f"{process_id}.ndjson")
+        self._record_path = os.path.join(record_dir, f"{process_id}.jsonl")
 
     def log(self, metrics: dict[str, Any], step: int | None = None, **kwargs) -> None:
         if self._record_dir is None:

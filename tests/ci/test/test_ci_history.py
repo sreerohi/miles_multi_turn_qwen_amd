@@ -1,7 +1,7 @@
 """Tests for the CI metric-history collection backend and harness handoff.
 
 Covers the record structure produced by `CiHistoryBackend` (target keys present,
-NDJSON parseable, raw unreduced series) and the harness per-attempt record-dir
+JSONL parseable, raw unreduced series) and the harness per-attempt record-dir
 handoff in `tests.ci.ci_utils`.
 """
 
@@ -31,7 +31,7 @@ def test_all_backends_registered():
     assert flag == "ci_enable_metrics_capture"
 
 
-def _read_ndjson(path):
+def _read_jsonl(path):
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
@@ -46,10 +46,10 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
     backend.log({"rollout/raw_reward": 0.3, "rollout/step": 0}, step=0)
     backend.finish()
 
-    files = [f for f in os.listdir(tmp_path) if f.endswith(".ndjson")]
+    files = [f for f in os.listdir(tmp_path) if f.endswith(".jsonl")]
     assert len(files) == 1, f"expected one record file, got {files}"
 
-    records = _read_ndjson(os.path.join(tmp_path, files[0]))
+    records = _read_jsonl(os.path.join(tmp_path, files[0]))
     by_metric = {r["metric"]: r["series"] for r in records}
 
     assert set(by_metric) == {"train/grad_norm", "train/ppo_kl", "rollout/raw_reward"}
@@ -67,7 +67,7 @@ def test_only_target_keys_captured(tmp_path, monkeypatch):
     backend.log({"train/grad_norm": 1.0, "train/pg_loss": 9.0, "train/step": 0}, step=0)
     backend.finish()
 
-    records = _read_ndjson(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
+    records = _read_jsonl(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
     metrics = {r["metric"] for r in records}
     assert metrics == {"train/grad_norm"}
     assert metrics <= set(TARGET_METRIC_KEYS)
@@ -87,7 +87,7 @@ def test_non_numeric_target_metric_errors_without_partial_capture(tmp_path, monk
     backend.log({"train/grad_norm": 2.0, "train/step": 1}, step=1)
     backend.finish()
 
-    records = _read_ndjson(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
+    records = _read_jsonl(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
     by_metric = {r["metric"]: r["series"] for r in records}
     assert by_metric["train/grad_norm"] == [[1, 2.0]]
 
@@ -114,7 +114,7 @@ def test_non_finite_values_recorded_as_strict_json_markers(tmp_path, monkeypatch
             if line.strip():
                 json.loads(line, parse_constant=_reject_bare_constant)
 
-    by_metric = {r["metric"]: r["series"] for r in _read_ndjson(path)}
+    by_metric = {r["metric"]: r["series"] for r in _read_jsonl(path)}
     assert by_metric["train/grad_norm"] == [[0, 1.5], [1, "NaN"]]
     assert by_metric["train/ppo_kl"] == [[1, "Infinity"]]
     assert by_metric["rollout/raw_reward"] == [[0, "-Infinity"]]
@@ -151,7 +151,7 @@ def test_flush_survives_without_finish(tmp_path, monkeypatch):
     backend.log({"train/grad_norm": 2.0, "train/step": 1}, step=1)
     # Deliberately no finish().
 
-    records = _read_ndjson(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
+    records = _read_jsonl(os.path.join(tmp_path, os.listdir(tmp_path)[0]))
     by_metric = {r["metric"]: r["series"] for r in records}
     assert by_metric["train/grad_norm"] == [[0, 1.0], [1, 2.0]]
 
@@ -170,7 +170,7 @@ def test_distinct_backend_instances_do_not_clobber_current_record_files(tmp_path
     b1.finish()
     b2.finish()
 
-    files = [f for f in os.listdir(tmp_path) if f.endswith(".ndjson")]
+    files = [f for f in os.listdir(tmp_path) if f.endswith(".jsonl")]
     assert len(files) == 2, f"expected one file per backend instance, got {files}"
 
 
@@ -241,4 +241,4 @@ sys.exit(1)
     attempt_2 = Path(_attempt_record_dir(str(record_base), child.name, attempt=2))
     assert (attempt_1 / "seen.txt").read_text() == str(attempt_1)
     assert (attempt_2 / "seen.txt").read_text() == str(attempt_2)
-    assert not list(record_base.glob("**/*.merged.ndjson"))
+    assert not list(record_base.glob("**/*.merged.jsonl"))
