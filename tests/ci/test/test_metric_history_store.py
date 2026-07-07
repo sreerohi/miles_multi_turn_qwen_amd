@@ -43,20 +43,20 @@ REL_RULE = '{"name":"rel","rel":0.2}'
 ABS_RULE = '{"abs_floor":0.02,"name":"abs"}'
 
 
-def _sample(metric_key, value, *, extractor_key=LAST_EXTRACTOR, rule_key=REL_RULE, step=-1):
-    return MetricSample(metric_key, extractor_key, rule_key, step, value)
+def _sample(metric_key, value, *, steps_key=LAST_EXTRACTOR, constraint_key=REL_RULE, step=-1):
+    return MetricSample(metric_key, steps_key, constraint_key, step, value)
 
 
 def _recent(
-    store, metric_key, *, extractor_key=LAST_EXTRACTOR, rule_key=REL_RULE, step=-1, identity=IDENTITY, limit=10
+    store, metric_key, *, steps_key=LAST_EXTRACTOR, constraint_key=REL_RULE, step=-1, identity=IDENTITY, limit=10
 ):
     return store.recent_trusted_values(
         identity.test_path,
         identity.backend,
         identity.suite,
         metric_key,
-        extractor_key,
-        rule_key,
+        steps_key,
+        constraint_key,
         step,
         identity.test_file_hash,
         limit,
@@ -150,8 +150,8 @@ def test_coordinate_isolation(store):
         created_at="2026-06-01T00:00:00+00:00",
         values=[
             _sample("pass_rate", 0.70),
-            _sample("pass_rate", 0.60, extractor_key=STEPS_EXTRACTOR, step=0),
-            _sample("pass_rate", 0.80, rule_key=ABS_RULE),
+            _sample("pass_rate", 0.60, steps_key=STEPS_EXTRACTOR, step=0),
+            _sample("pass_rate", 0.80, constraint_key=ABS_RULE),
             _sample("pass_rate", 0.90, step=0),
         ],
     )
@@ -159,8 +159,8 @@ def test_coordinate_isolation(store):
     # Each exact coordinate matches only its own row: plain equality on every
     # column, no cross-matching.
     assert _recent(store, "pass_rate") == [0.70]
-    assert _recent(store, "pass_rate", extractor_key=STEPS_EXTRACTOR, step=0) == [0.60]
-    assert _recent(store, "pass_rate", rule_key=ABS_RULE) == [0.80]
+    assert _recent(store, "pass_rate", steps_key=STEPS_EXTRACTOR, step=0) == [0.60]
+    assert _recent(store, "pass_rate", constraint_key=ABS_RULE) == [0.80]
     assert _recent(store, "pass_rate", step=0) == [0.90]
 
 
@@ -227,8 +227,8 @@ def test_baseline_sql_matches_authoritative_shape():
         "r.backend = ?",
         "r.suite = ?",
         "mv.metric_key = ?",
-        "mv.extractor_key = ?",
-        "mv.rule_key = ?",
+        "mv.steps_key = ?",
+        "mv.constraint_key = ?",
         "mv.step = ?",
         "r.test_file_hash = ?",
         "r.trusted = 1",

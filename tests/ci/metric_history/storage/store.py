@@ -9,7 +9,7 @@
   github_run_attempt, event_name, ref), the `created_at` timestamp, and
   the run-level `trusted` flag.
 * `metric_values` -- one row per comparison-coordinate value a run produced:
-  `(metric_key, extractor_key, rule_key, step, value)`, keyed back to `runs`
+  `(metric_key, steps_key, constraint_key, step, value)`, keyed back to `runs`
   by `run_id`.
 * `trusted` lives on the run, not on the metric: a run is trusted as a
   whole or not at all, so revoking trust drops every metric the run
@@ -36,17 +36,17 @@ class MetricSample:
     """One comparison-coordinate value a run contributed.
 
     The coordinate is the declaring gate's literal content plus the point:
-    `extractor_key` / `rule_key` are canonical JSON strings of the
-    declaration's `extractor` / `constraint` dicts exactly as written in the
-    test file; `step` is the point the value came from -- step `k`, or `-1`
-    for a whole-series reduction (e.g. a `last` extractor), which must key on
-    a constant rather than the step it happened to land on, or its history
-    would fragment across runs of different lengths.
+    `steps_key` / `constraint_key` are canonical JSON of the declaration's
+    raw `steps` / `constraint` literals; `step` is the point the value came
+    from -- step `k`, or `-1` for a whole-series reduction (e.g.
+    `steps="last"`), which must key on a constant rather than the step it
+    happened to land on, or its history would fragment across runs of
+    different lengths.
     """
 
     metric_key: str
-    extractor_key: str
-    rule_key: str
+    steps_key: str
+    constraint_key: str
     step: int
     value: float
 
@@ -126,8 +126,8 @@ class MetricHistoryStore(abc.ABC):
         backend: str,
         suite: str,
         metric_key: str,
-        extractor_key: str,
-        rule_key: str,
+        steps_key: str,
+        constraint_key: str,
         step: int,
         test_file_hash: str,
         limit: int,
@@ -135,7 +135,7 @@ class MetricHistoryStore(abc.ABC):
         """Return up to `limit` baseline values, newest run first.
 
         Only trusted runs matching the exact identity tuple and the exact
-        value coordinate `(metric_key, extractor_key, rule_key, step)`
+        value coordinate `(metric_key, steps_key, constraint_key, step)`
         contribute. Every coordinate column is NOT NULL, so matching is plain
         equality -- no NULL-equality semantics anywhere in the query.
         """

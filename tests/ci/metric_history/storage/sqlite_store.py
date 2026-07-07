@@ -6,7 +6,7 @@
 * Query and write semantics mirror the hosted Postgres backend, so tests
   exercising this implementation validate the contract the gate relies on in
   production — including the authoritative baseline query's plain-equality
-  match on the `(metric_key, extractor_key, rule_key, step)` coordinate.
+  match on the `(metric_key, steps_key, constraint_key, step)` coordinate.
 * This module owns a small local schema literal for tests; production Postgres
   setup is out-of-band until the hosted backend is implemented.
 * Schema is applied at construction (`apply_schema`), never on the
@@ -48,8 +48,8 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS metric_values (
     run_id         TEXT NOT NULL REFERENCES runs(run_id),
     metric_key     TEXT NOT NULL,
-    extractor_key  TEXT NOT NULL,
-    rule_key       TEXT NOT NULL,
+    steps_key  TEXT NOT NULL,
+    constraint_key       TEXT NOT NULL,
     step           INTEGER NOT NULL,
     value          REAL NOT NULL
 );
@@ -68,8 +68,8 @@ WHERE r.test_path = ?
   AND r.backend = ?
   AND r.suite = ?
   AND mv.metric_key = ?
-  AND mv.extractor_key = ?
-  AND mv.rule_key = ?
+  AND mv.steps_key = ?
+  AND mv.constraint_key = ?
   AND mv.step = ?
   AND r.test_file_hash = ?
   AND r.trusted = 1
@@ -132,9 +132,9 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
                 ),
             )
             self._conn.executemany(
-                "INSERT INTO metric_values (run_id, metric_key, extractor_key, rule_key, step, value)"
+                "INSERT INTO metric_values (run_id, metric_key, steps_key, constraint_key, step, value)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                [(run_id, s.metric_key, s.extractor_key, s.rule_key, s.step, s.value) for s in values],
+                [(run_id, s.metric_key, s.steps_key, s.constraint_key, s.step, s.value) for s in values],
             )
         return run_id
 
@@ -144,15 +144,15 @@ class SQLiteMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        extractor_key: str,
-        rule_key: str,
+        steps_key: str,
+        constraint_key: str,
         step: int,
         test_file_hash: str,
         limit: int,
     ) -> list[float]:
         rows = self._conn.execute(
             _BASELINE_SQL,
-            (test_path, backend, suite, metric_key, extractor_key, rule_key, step, test_file_hash, limit),
+            (test_path, backend, suite, metric_key, steps_key, constraint_key, step, test_file_hash, limit),
         ).fetchall()
         return [row[0] for row in rows]
 

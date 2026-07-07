@@ -18,7 +18,7 @@ Implementation notes for whoever lands the real driver:
   read/write path must remain DML-only: insert runs, read baselines, and mark
   runs untrusted.
 * `recent_trusted_values` must use the authoritative baseline query verbatim
-  (plain equality on `metric_key` / `extractor_key` / `rule_key` / `step`), so
+  (plain equality on `metric_key` / `steps_key` / `constraint_key` / `step`), so
   its results match
   :class:`~tests.ci.metric_history.storage.sqlite_store.SQLiteMetricHistoryStore`.
 """
@@ -55,8 +55,8 @@ class NeonMetricHistoryStore(MetricHistoryStore):
         backend: str,
         suite: str,
         metric_key: str,
-        extractor_key: str,
-        rule_key: str,
+        steps_key: str,
+        constraint_key: str,
         step: int,
         test_file_hash: str,
         limit: int,
