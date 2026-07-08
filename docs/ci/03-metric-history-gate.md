@@ -19,6 +19,14 @@ The gate compares a number only against earlier numbers of the same kind, from t
 
 The store's baseline query keys on exactly these (plus a `limit` for how many recent points to read): `recent_trusted_values(test_path, backend, suite, metric_key, steps_key, constraint_key, step, test_file_hash, limit)`.
 
+## The gate: two layers
+
+After a test passes, each comparison coordinate's value is checked with `|cur - ref| > max(rel * |ref|, abs_floor)` (`rel` default `0.20`; `abs_floor` only matters for metrics near zero, e.g. step-0 `ppo_kl`).
+
+- **Hard gate** — always on. `ref` = a hardcoded safety limit. Runs even with zero history; generalizes today's `--ci-<metric>` thresholds.
+- **Historical gate** — activates with ≥1 trusted point in the series. `ref` = mean of the series' trusted runs. Catches drift.
+- **Cold start** (0 trusted): historical gate is inactive, hard gate only — not an error.
+
 ## Storage: two backends, two tables
 
 - Backends: `SQLiteMetricHistoryStore` is the local/offline backend for unit tests and in-process development; `NeonMetricHistoryStore` is the hosted Postgres backend for CI/prod. Callers use only `MetricHistoryStore`: for the same inputs, both backends must persist the same run and metric fields, return the same trusted baseline rows in newest-first order, and revoke trust for the same runs via `mark_untrusted`.
@@ -29,14 +37,6 @@ The store's baseline query keys on exactly these (plus a `limit` for how many re
 - `metric_values` — one row per value: `run_id` FK + `(metric_key, steps_key, constraint_key, step)` + `value`.
 - Read path: composite index `runs(test_path, backend, suite, test_file_hash, trusted, created_at DESC)`.
 - Hosted Postgres setup is out-of-band in this round: when `NeonMetricHistoryStore` is implemented, provision the equivalent two tables and application role outside this repo, and keep runtime gate code DML-only. Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
-
-## The gate: two layers
-
-After a test passes, each comparison coordinate's value is checked with `|cur - ref| > max(rel * |ref|, abs_floor)` (`rel` default `0.20`; `abs_floor` only matters for metrics near zero, e.g. step-0 `ppo_kl`).
-
-- **Hard gate** — always on. `ref` = a hardcoded safety limit. Runs even with zero history; generalizes today's `--ci-<metric>` thresholds.
-- **Historical gate** — activates with ≥1 trusted point in the series. `ref` = mean of the series' trusted runs. Catches drift.
-- **Cold start** (0 trusted): historical gate is inactive, hard gate only — not an error.
 
 ## Trust, cleanup, who writes
 
