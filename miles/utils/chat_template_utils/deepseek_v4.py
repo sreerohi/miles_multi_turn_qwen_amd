@@ -52,6 +52,9 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
     kwargs = dict(kwargs)
     if (enable_thinking := kwargs.pop("enable_thinking", None)) is not None:
         kwargs.setdefault("thinking_mode", "thinking" if enable_thinking else "chat")
+    # sglang can accept thinking as a kwarg to set thinking_mode, like dsv3.1
+    if (thinking := kwargs.pop("thinking", None)) is not None:
+        kwargs.setdefault("thinking_mode", "thinking" if thinking else "chat")
     # reject unknown kwargs to avoid silent config drop
     unknown = set(kwargs) - _KNOWN_KWARGS
     if unknown:
@@ -66,6 +69,12 @@ def _build_deepseek_encode_config(kwargs: dict) -> dict:
         if key in kwargs:
             cfg[key] = kwargs[key]
     return cfg
+
+
+def render_thinking_enabled(chat_template_kwargs: dict[str, Any]) -> bool:
+    """Whether *chat_template_kwargs* resolve to thinking mode, through the
+    same resolution path ``render_messages`` uses."""
+    return _build_deepseek_encode_config(chat_template_kwargs)["thinking_mode"] == "thinking"
 
 
 def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
