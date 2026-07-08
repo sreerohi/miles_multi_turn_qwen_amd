@@ -30,7 +30,7 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
-from miles.utils.chat_template_utils.deepseek import render_thinking_enabled
+from miles.utils.chat_template_utils import deepseek
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
@@ -862,7 +862,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         if "thinking" not in self.chat_template_kwargs:
             self.chat_template_kwargs = {
                 **self.chat_template_kwargs,
-                "thinking": render_thinking_enabled(self.chat_template_kwargs),
+                "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
             }
 
     def tokenize_additional_non_assistant(
