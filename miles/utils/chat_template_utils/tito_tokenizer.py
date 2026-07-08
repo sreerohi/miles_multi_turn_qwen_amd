@@ -30,7 +30,7 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
-from miles.utils.chat_template_utils.deepseek_v4 import render_thinking_enabled
+from miles.utils.chat_template_utils.deepseek import render_thinking_enabled
 from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
@@ -724,7 +724,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
     V3.2 ships no jinja chat_template; sglang renders prompts through
     ``encoding_dsv32.encode_messages``, and miles' ``apply_chat_template`` routes
-    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek_v32`` bridge.
+    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek`` bridge.
     TITO incremental tokenization rides that same bridge so it stays
     byte-aligned with what the runtime serves.
 
@@ -779,7 +779,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
-    routes any V4 tokenizer to the ``chat_template_utils.deepseek_v4`` bridge, and
+    routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
     with what the runtime serves.
 
