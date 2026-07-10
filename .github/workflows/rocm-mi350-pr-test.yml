@@ -14,6 +14,12 @@ on:
     branches: [runnert-test]
   workflow_dispatch:
 
+# A new push cancels the previous in-progress run of this branch so the single
+# MI350 runner isn't double-booked.
+concurrency:
+  group: rocm-mi350-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: [self-hosted, mi350]
@@ -56,6 +62,12 @@ jobs:
       HF_HOME: /root/.cache/huggingface
       GITHUB_COMMIT_NAME: ${{ github.sha }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      # Image has an SGLang<->aiter skew: SGLang's fp8.py does an unguarded
+      # top-level `from aiter.ops.shuffle import shuffle_scale` under
+      # `if _use_aiter`, but this aiter build lacks shuffle_scale -> engine
+      # init ImportError. Disabling aiter skips that import (the session-verify
+      # test passes for the same reason).
+      SGLANG_USE_AITER: "0"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
