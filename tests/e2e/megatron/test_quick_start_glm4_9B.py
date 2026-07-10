@@ -2,14 +2,13 @@ import os
 
 import torch
 
-from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=600, suite="stage-c-4-gpu-h200", labels=["megatron"], disabled="Not worthy for testing, too naive."
 )
-register_rocm_ci(est_time=600, suite="stage-runnert-mi350", labels=["megatron"])
 
 ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
 IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None

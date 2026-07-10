@@ -1,25 +1,41 @@
 name: ROCm MI350 runnert-test
 
-# Runs the 13 integrated-PR testcases (suite stage-runnert-mi350) one-by-one on
-# a self-hosted MI350 runner, using the miles-baked sgl-dev image. Triggered by
-# pushing the runnert-test branch, or manually via workflow_dispatch.
+# Runs the integrated-PR testcases on a self-hosted MI350 runner, ONE PER JOB
+# so each test gets a FRESH sgl-dev container (GitHub Actions tears the job
+# container down between jobs). This isolates GPU/VRAM/process state per test
+# and avoids cross-test orphan/OOM/NCCL-cascade issues seen with a single
+# shared container. max-parallel=1 => serial on the single MI350 runner.
+#
+# Excluded (disabled upstream on radixark/main):
+#   - tests/e2e/megatron/test_quick_start_glm4_9B.py   ("Not worthy for testing, too naive.")
+#   - tests/e2e/ckpt/test_glm47_flash_ckpt.py          ("Disabled due to bugs.")
 on:
   push:
     branches: [runnert-test]
   workflow_dispatch:
-    inputs:
-      continue_on_error:
-        description: "Keep running remaining tests after a failure"
-        type: boolean
-        default: true
 
 jobs:
-  rocm-mi350:
+  test:
     runs-on: [self-hosted, mi350]
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        test:
+          - tests/e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py
+          - tests/e2e/sglang_config/test_sglang_config_mixed_offload.py
+          - tests/e2e/short/test_qwen2.5_0.5B_gsm8k_short.py
+          - tests/e2e/sglang_config/test_sglang_config.py
+          - tests/e2e/sglang_config/test_sglang_config_mixed_offload_ft.py
+          - tests/e2e/sglang/test_session_server_multi_role/test_glm47.py
+          - tests/e2e/megatron/test_mimo_7B_mtp_only_grad.py
+          - tests/e2e/ckpt/test_qwen3_4B_ckpt.py
+          - tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py
+          - tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py
+          - tests/e2e/megatron/test_glm47_flash/test_r3_mtp.py
     container:
       image: rocm/sgl-dev:miles-rocm700-mi35x-20260708
-      # ROCm equivalents of _run-ci.yml's CUDA options: expose the GPUs via
-      # /dev/kfd + /dev/dri (not --gpus all), forward HIP_VISIBLE_DEVICES.
       options: >-
         --device /dev/kfd --device /dev/dri
         --group-add 44 --group-add 109
@@ -44,16 +60,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Cleanup stale GPU processes
-        shell: bash
-        run: |
-          ray stop --force 2>/dev/null || true
-          pkill -9 sglang 2>/dev/null || true
-          pkill -9 -f raylet 2>/dev/null || true
-          pkill -9 -f gcs_server 2>/dev/null || true
-          pkill -9 -f train_async 2>/dev/null || true
-          sleep 3
-
       - name: Wait for ROCm GPUs
         shell: bash
         run: |
@@ -74,17 +80,14 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           pip install -e . --no-deps --break-system-packages
           pip install polars --break-system-packages || true
-          # megatron-bridge training tests hard-import modelopt
           pip install nvidia-modelopt --break-system-packages || true
 
       - name: Apply ROCm SGLang patches (meta_info + yarn)
         shell: bash
         run: python3 tests/ci/rocm_sglang_patches.py
 
-      - name: Resolve suite plan
+      - name: Run ${{ matrix.test }}
         shell: bash
-        run: python3 tests/ci/run_suite.py --hw rocm --suite stage-runnert-mi350 --match-all-labels --continue-on-error --list-only
-
-      - name: Run tests
-        shell: bash
-        run: python3 tests/ci/run_suite.py --hw rocm --suite stage-runnert-mi350 --match-all-labels --continue-on-error
+        run: |
+          echo "=== running ${{ matrix.test }} ==="
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 "${{ matrix.test }}"
