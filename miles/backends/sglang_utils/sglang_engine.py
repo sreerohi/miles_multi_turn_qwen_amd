@@ -256,7 +256,12 @@ class SGLangEngine(RayActor):
         except requests.exceptions.HTTPError as e:
             if hasattr(e, "add_note"):
                 e.add_note(f"{response.text=}")
-            raise
+                raise
+            # Python 3.10 (image ships 3.10.12) lacks BaseException.add_note;
+            # fold the response body into the message so it isn't lost.
+            raise requests.exceptions.HTTPError(
+                f"{e} | Response: {response.text}", response=response
+            ) from None
         return response.json()
 
     def health_generate(self, timeout: float = 5.0) -> bool:
@@ -557,13 +562,26 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def begin_weight_update(self):
-        """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {})
+    def post_process_weights(
+        self,
+        restore_weights_before_load: bool = False,
+        post_process_quantization: bool = False,
+        post_load_weights: bool = False,
+    ):
+        """
+        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
+        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
+        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
+        """
 
-    def end_weight_update(self):
-        """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+        return self._make_request(
+            "post_process_weights",
+            {
+                "restore_weights_before_load": restore_weights_before_load,
+                "post_process_quantization": post_process_quantization,
+                "post_load_weights": post_load_weights,
+            },
+        )
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(

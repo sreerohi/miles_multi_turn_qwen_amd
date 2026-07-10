@@ -131,6 +131,18 @@ def add_sglang_arguments(parser):
         ),
     )
 
+    # Newer SGLang registers --cuda-graph-backend-prefill (surfaced here as
+    # --sglang-cuda-graph-backend-prefill); the image's SGLang 0.5.9 does not, yet
+    # miles_validate_args reads args.sglang_cuda_graph_backend_prefill on the colocate
+    # path before sglang_validate_args runs. Register it (default None) so the attribute
+    # exists at parse time; it is only a colocate policy knob and is not forwarded to the engine.
+    if "--sglang-cuda-graph-backend-prefill" not in parser._option_string_actions:
+        parser.add_argument(
+            "--sglang-cuda-graph-backend-prefill",
+            type=str,
+            default=None,
+        )
+
     return parser
 
 
@@ -144,6 +156,14 @@ def validate_args(args):
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
+    # sglang_{dp,pp,ep,attn_cp}_size are registered CLI args only on newer SGLang;
+    # the image's SGLang (0.5.9) doesn't register them and upstream removed the
+    # miles-side derivations. Default to 1 (no DP/PP/EP/attn-CP) so validation and
+    # engine init work on that build. The run's MoE experts run via the triton
+    # runner inside the TP engine, so ep=1 here is correct.
+    for _name in ("sglang_dp_size", "sglang_pp_size", "sglang_ep_size", "sglang_attn_cp_size"):
+        if not hasattr(args, _name):
+            setattr(args, _name, 1)
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 

@@ -22,11 +22,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-
 try:
     from enum import StrEnum
-except ImportError:
-    from backports.strenum import StrEnum
+except ImportError:  # Python 3.10 (image ships 3.10.12); StrEnum is 3.11+
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        pass
 from pathlib import Path
 from typing import Any
 
@@ -430,7 +432,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
         ),
     )
 
-    max_trim_tokens: int = 1
+    max_trim_tokens: int = 5
     _default_assistant_start_str: str = "<|assistant|>"
 
     def __init__(

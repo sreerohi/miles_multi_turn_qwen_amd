@@ -19,7 +19,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
-from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
+from .common import _check_weight_sync_results, post_process_weights
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
@@ -197,8 +197,16 @@ class UpdateWeightFromTensor:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            if not skip_base_sync:
-                begin_weight_update(self.rollout_engines)
+            if (
+                not skip_base_sync
+                and self.quantization_config
+                and self.quantization_config["quant_method"] in ["compressed-tensors"]
+            ):
+                post_process_weights(
+                    rollout_engines=self.rollout_engines,
+                    restore_weights_before_load=True,
+                    post_process_quantization=False,
+                )
         dist.barrier(group=get_gloo_group())
 
         megatron_local_weights = self.weights_getter()
@@ -240,9 +248,14 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
-            # Skip when no fresh base bytes landed (skip_base_sync).
+            # process_weights_after_loading is a one-shot bf16 → int4/Marlin
+            # transform; skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
+                post_process_weights(
+                    rollout_engines=self.rollout_engines,
+                    restore_weights_before_load=False,
+                    post_process_quantization=True,
+                )
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
