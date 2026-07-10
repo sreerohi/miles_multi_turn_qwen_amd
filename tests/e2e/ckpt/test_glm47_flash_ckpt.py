@@ -1,12 +1,13 @@
 import os
 
 import torch
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
 # FIXME: need to modify megatron, better fix later.
 register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"], disabled="Disabled due to bugs.")
+register_rocm_ci(est_time=2400, suite="stage-runnert-mi350", labels=["ckpt"])
 
 ENABLE_EVAL = 0
 USE_DEEPEP = 0

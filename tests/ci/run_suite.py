@@ -41,6 +41,9 @@ PER_COMMIT_SUITES = {
         "stage-c-8-gpu-mi350",
         "stage-c-4-gpu-mi350",
         "stage-c-2-gpu-mi350",
+        # Dedicated suite for the runnert-test integrated-PR run: all 13 target
+        # testcases are registered here so one MI350 runner runs exactly them.
+        "stage-runnert-mi350",
     ],
 }
 
