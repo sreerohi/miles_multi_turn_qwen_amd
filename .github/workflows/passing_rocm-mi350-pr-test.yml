@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, mi350]
+    runs-on: [self-hosted, mi350, passing]
     timeout-minutes: 150
     strategy:
       fail-fast: false
