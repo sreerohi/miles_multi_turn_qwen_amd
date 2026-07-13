@@ -88,9 +88,35 @@ jobs:
           pip install polars --break-system-packages || true
           pip install nvidia-modelopt --break-system-packages || true
 
-      - name: Apply ROCm SGLang patches (meta_info + yarn)
+      - name: Apply ROCm SGLang patch (meta_info for logprobs)
         shell: bash
-        run: python3 tests/ci/rocm_sglang_patches.py
+        run: |
+          # Patch 1 only: attach choice.meta_info when logprobs is requested,
+          # not just when return_meta_info is set. Required by the session-verify
+          # test (GLM47) which reads choice.meta_info.output_token_logprobs;
+          # otherwise session chat/completions returns 502. Applied inline to the
+          # SGLang install baked into the CI image (idempotent).
+          python3 - <<'PY'
+          import os
+          sglang = os.environ.get("SGLANG_DIR", "/sgl-workspace/sglang/python/sglang")
+          path = os.path.join(sglang, "srt/entrypoints/openai/serving_chat.py")
+          old = 'ret_item["meta_info"] if request.return_meta_info else None'
+          new = 'ret_item["meta_info"] if (request.return_meta_info or request.logprobs) else None'
+          name = os.path.basename(path)
+          if not os.path.exists(path):
+              print(f"SKIP {name}: not found at {path}")
+              raise SystemExit(0)
+          src = open(path).read()
+          if new in src:
+              print(f"OK   {name}: already patched")
+              raise SystemExit(0)
+          count = src.count(old)
+          if count != 1:
+              print(f"WARN {name}: expected 1 occurrence, found {count}; not patching")
+              raise SystemExit(1)
+          open(path, "w").write(src.replace(old, new))
+          print(f"PATCHED {name}")
+          PY
 
       - name: Run ${{ matrix.test }}
         shell: bash
