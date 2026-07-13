@@ -1,0 +1,97 @@
+name: ROCm MI350 passing-only
+
+# Same setup as rocm-mi350-pr-test.yml but restricted to the testcases that
+# PASSED in run 29124735347. ONE PER JOB so each test gets a FRESH sgl-dev
+# container. max-parallel=1 => serial on the single MI350 runner.
+#
+# Excluded here (FAILED in that run, tracked separately):
+#   - tests/e2e/ckpt/test_qwen3_4B_ckpt.py                (RCCL allreduce timeout on ckpt save)
+#   - tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py           (failed)
+#   - tests/e2e/megatron/test_glm47_flash/test_r3_mtp.py  (failed)
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: rocm-mi350-passing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, mi350]
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        test:
+          - tests/e2e/short/test_qwen2.5_0.5B_gsm8k_async_short.py
+          - tests/e2e/sglang_config/test_sglang_config_mixed_offload.py
+          - tests/e2e/short/test_qwen2.5_0.5B_gsm8k_short.py
+          - tests/e2e/sglang_config/test_sglang_config.py
+          - tests/e2e/sglang_config/test_sglang_config_mixed_offload_ft.py
+          - tests/e2e/sglang/test_session_server_multi_role/test_glm47.py
+          - tests/e2e/megatron/test_mimo_7B_mtp_only_grad.py
+          - tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py
+    container:
+      image: rocm/sgl-dev:miles-rocm700-mi35x-20260708
+      options: >-
+        --device /dev/kfd --device /dev/dri
+        --group-add 44 --group-add 109
+        --security-opt seccomp=unconfined
+        --ipc=host --shm-size=32g
+        --privileged
+        --ulimit memlock=-1 --ulimit stack=67108864
+        --env HIP_VISIBLE_DEVICES
+        -v /data/miles_ci:/data/miles_ci
+        -v /data/miles_ci/models:/root/models
+        -v /data/miles_ci/datasets:/root/datasets
+        -v /data/miles_ci/hf_cache:/root/.cache/huggingface
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      HF_HOME: /root/.cache/huggingface
+      GITHUB_COMMIT_NAME: ${{ github.sha }}
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      # Image has an SGLang<->aiter skew: SGLang's fp8.py does an unguarded
+      # top-level `from aiter.ops.shuffle import shuffle_scale` under
+      # `if _use_aiter`, but this aiter build lacks shuffle_scale -> engine
+      # init ImportError. Disabling aiter skips that import (the session-verify
+      # test passes for the same reason).
+      SGLANG_USE_AITER: "0"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Wait for ROCm GPUs
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            if rocm-smi --showid >/dev/null 2>&1; then
+              echo "ROCm ready after $((i-1)) retry(s)"
+              rocm-smi --showproductname 2>/dev/null | head || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: rocm-smi did not become ready after 120s" >&2
+          exit 1
+
+      - name: Install miles (SGLang + Megatron are baked into the image)
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          pip install -e . --no-deps --break-system-packages
+          pip install polars --break-system-packages || true
+          pip install nvidia-modelopt --break-system-packages || true
+
+      - name: Apply ROCm SGLang patches (meta_info + yarn)
+        shell: bash
+        run: python3 tests/ci/rocm_sglang_patches.py
+
+      - name: Run ${{ matrix.test }}
+        shell: bash
+        run: |
+          echo "=== running ${{ matrix.test }} ==="
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 "${{ matrix.test }}"
