@@ -9,6 +9,8 @@ name: ROCm MI350 passing-only
 #   - tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py           (failed)
 #   - tests/e2e/megatron/test_glm47_flash/test_r3_mtp.py  (failed)
 on:
+  push:
+    branches: [testing_clean]
   workflow_dispatch:
 
 concurrency:
