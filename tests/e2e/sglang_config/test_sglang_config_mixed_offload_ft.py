@@ -121,8 +121,6 @@ def execute():
     )
 
     ci_args = "--ci-test "
-    if IS_ROCM:
-        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "

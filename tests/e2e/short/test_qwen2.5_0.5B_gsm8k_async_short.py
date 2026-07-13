@@ -84,8 +84,6 @@ def execute():
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
     ci_args = "--ci-test "
-    if IS_ROCM:
-        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
