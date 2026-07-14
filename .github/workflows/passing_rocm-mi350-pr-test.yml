@@ -1,6 +1,6 @@
 name: ROCm MI350 passing-only
 
-# Same setup as rocm-mi350-pr-test.yml but restricted to the testcases that
+# Same setup as rocm-mi350-pr-test.yml but restricted  to the testcases that
 # PASSED in run 29124735347. ONE PER JOB so each test gets a FRESH sgl-dev
 # container. max-parallel=1 => serial on the single MI350 runner.
 #
