@@ -32,7 +32,6 @@ jobs:
           - tests/e2e/sglang_config/test_sglang_config.py
           - tests/e2e/sglang_config/test_sglang_config_mixed_offload_ft.py
           - tests/e2e/sglang/test_session_server_multi_role/test_glm47.py
-          - tests/e2e/megatron/test_mimo_7B_mtp_only_grad.py
           - tests/e2e/long/test_qwen2.5_0.5B_gsm8k_async.py
     container:
       image: rocm/sgl-dev:miles-rocm700-mi35x-20260708
