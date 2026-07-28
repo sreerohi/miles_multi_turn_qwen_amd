@@ -101,6 +101,7 @@ def execute():
         f"--actor-num-gpus-per-node {1 if FEW_GPU else 2} "
         f"--rollout-num-gpus {3 if FEW_GPU else 6} "
         "--megatron-to-hf-mode bridge "
+        "--deterministic-mode "
     )
 
     train_args = (
@@ -122,7 +123,10 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+        extra_env_vars={
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+            **({"NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0"} if IS_ROCM else {}),
+        },
     )
 
 
