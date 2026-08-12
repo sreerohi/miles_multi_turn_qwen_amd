@@ -49,6 +49,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 100
     save_traces_dir: str = ""
 
+    # SGLang / TITO parsers (model-family specific; GLM-4.7-Flash defaults).
+    # Subclasses (e.g. run-qwen3-swe.py) override these for other models.
+    sglang_tool_call_parser: str = "glm47"
+    sglang_reasoning_parser: str = "glm45"
+    tito_model: str = "glm47"
+
     # Agent settings
     agent_server_url: str = os.environ.get(
         "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://agent_env:11000")
@@ -160,8 +166,8 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
-        "--sglang-tool-call-parser glm47 "
-        "--sglang-reasoning-parser glm45 "
+        f"--sglang-tool-call-parser {args.sglang_tool_call_parser} "
+        f"--sglang-reasoning-parser {args.sglang_reasoning_parser} "
         "--sglang-router-port 31000 "
     )
 
@@ -171,7 +177,7 @@ def execute(args: ScriptArgs):
         "--custom-rm-path generate.reward_func "
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
-        "--tito-model glm47 "
+        f"--tito-model {args.tito_model} "
         "--use-session-server "
         "--session-server-port 30000 "
     )
@@ -240,6 +246,15 @@ def execute(args: ScriptArgs):
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
+
+    # On ROCm/AMD, Ray blanks the Ray-job driver's HIP_VISIBLE_DEVICES, which
+    # makes SGLang's import-time GPU probe fail ("No HIP GPUs are available").
+    # Tell Ray not to touch device visibility so miles manages placement itself.
+    # No-op on NVIDIA (``torch.version.hip`` is None), so GLM/NVIDIA is unchanged.
+    import torch
+
+    if getattr(torch.version, "hip", None):
+        extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
 
     U.execute_train(
         train_args=train_args,
