@@ -2,6 +2,7 @@ import hashlib
 import logging
 import math
 import os
+import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -262,6 +263,7 @@ class UpdateWeightFromTensor:
 
         megatron_local_weights = self.weights_getter()
 
+        _impl_t0 = time.perf_counter()
         if not skip_base_sync:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
@@ -312,12 +314,17 @@ class UpdateWeightFromTensor:
                 self._lora_base_synced = True
 
         dist.barrier(group=get_gloo_group())
+        _impl_elapsed = time.perf_counter() - _impl_t0
+        logger.debug(f"update_weights_implementation elapsed: {_impl_elapsed:.3f}s")
 
         if rank == 0:
+            _finalize_t0 = time.perf_counter()
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            _finalize_elapsed = time.perf_counter() - _finalize_t0
+            logger.debug(f"finalize_and_resume_engines elapsed: {_finalize_elapsed:.3f}s")
         dist.barrier(group=get_gloo_group())
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:

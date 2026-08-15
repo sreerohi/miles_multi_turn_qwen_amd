@@ -76,6 +76,27 @@ def aggregate_agent_metrics(samples: list[Sample]) -> dict:
     _agg_mean(metrics, all_metrics, ["time_per_turn", "model_query_time_avg", "env_execution_time_avg"], suffix="")
     _agg_mean(metrics, all_metrics, ["model_time_ratio", "env_time_ratio", "eval_time_ratio"], suffix="")
 
+    # Harbor per-phase timings (from _extract_metrics in harbor/agent_server/results.py):
+    # env_setup_time = docker compose build+up, agent_setup_time = agent install,
+    # agent_run_time = agent execution, eval_time = verifier/grading.
+    # teardown_overhead = total - (env_setup + agent_setup + agent_run + eval).
+    _agg_mean(metrics, all_metrics, ["env_setup_time", "agent_setup_time", "agent_run_time", "eval_time"])
+    for key in ["env_setup_time", "agent_setup_time", "agent_run_time", "eval_time"]:
+        values = _collect_values(all_metrics, key)
+        non_zero = [v for v in values if v > 0]
+        if non_zero:
+            metrics[f"agent/{key}_sum"] = sum(non_zero)
+
+    # Teardown overhead: wall-clock residual after known phases.
+    teardown_vals = []
+    for m in all_metrics:
+        total = m.get("total_time")
+        known = sum(m.get(k, 0) for k in ["env_setup_time", "agent_setup_time", "agent_run_time", "eval_time"])
+        if total is not None and known > 0:
+            teardown_vals.append(max(0.0, total - known))
+    if teardown_vals:
+        metrics["agent/teardown_overhead_time_mean"] = sum(teardown_vals) / len(teardown_vals)
+
     values = _collect_values(all_metrics, "total_time")
     if values:
         metrics["agent/total_time_mean"] = sum(values) / len(values)

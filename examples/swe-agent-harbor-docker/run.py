@@ -127,20 +127,21 @@ def execute(args: ScriptArgs):
         "--balance-data "
     )
 
+    tp_size = 1
+    ep_size = min(8, args.num_gpus_per_node)
+
     perf_args = (
-        "--tensor-model-parallel-size 4 "
+        f"--tensor-model-parallel-size {tp_size} "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        f"--expert-model-parallel-size {ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 16384 "
-        "--optimizer-cpu-offload "
-        "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "
     )
 
@@ -164,8 +165,10 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
         "--sglang-mem-fraction-static 0.7 "
+        "--sglang-cuda-graph-max-bs 512 "
+        "--sglang-moe-runner-backend triton "
         f"--sglang-tool-call-parser {args.sglang_tool_call_parser} "
         f"--sglang-reasoning-parser {args.sglang_reasoning_parser} "
         "--sglang-router-port 31000 "
@@ -189,6 +192,8 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--colocate "
+        "--no-offload-train "
+        "--no-offload-rollout "
         f"--actor-num-nodes {args.num_nodes} "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--rollout-num-gpus {args.num_gpus_per_node} "

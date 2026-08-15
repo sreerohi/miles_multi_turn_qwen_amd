@@ -6,6 +6,7 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 
 import json
 import logging
+import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -71,13 +72,19 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
     @app.post("/sessions/{session_id}/v1/chat/completions")
     async def chat_completions(request: Request, session_id: str):
         body = await request.body()
-        return await core.chat_completions(
+        _t0 = time.perf_counter()
+        response = await core.chat_completions(
             session_id,
             method=request.method,
             query=request.url.query,
             headers=dict(request.headers),
             body=body,
         )
+        # Log server-side GPU generation time per session so build_timeline_data.py
+        # can separate GPU time from agent<->server network latency per trial.
+        _gen_time = time.perf_counter() - _t0
+        logger.info(f"[session-server] GEN session_id={session_id} gen_time={_gen_time:.3f}s")
+        return response
 
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):

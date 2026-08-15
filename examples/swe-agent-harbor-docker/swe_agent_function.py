@@ -11,9 +11,11 @@ differentiation (environment, grading harness, agent selection).
 """
 
 import asyncio
+import json
 import logging
 import os
 import socket
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
@@ -99,6 +101,12 @@ async def run(
     if max_seq_len is not None:
         request["max_seq_len"] = int(max_seq_len)
 
+    # Tag each /run request with the current rollout_id (set by generate.py per rollout)
+    # so build_timeline_data.py can assign trials to steps exactly instead of by wall-clock.
+    rollout_id = os.getenv("MILES_ROLLOUT_ID")
+    if rollout_id is not None:
+        request["rollout_id"] = int(rollout_id)
+
     session_server_id = metadata.get("session_server_id")
     if session_server_id is not None:
         if external_host:
@@ -126,12 +134,29 @@ async def run(
         logger.error(f"Agent server call failed: {e}")
         return None
 
-    return {
+    result = {
         "reward": response.get("reward", 0.0),
         "exit_status": response.get("exit_status", ""),
         "eval_report": response.get("eval_report", {}),
         "agent_metrics": response.get("agent_metrics", {}),
     }
+
+    # Write miles_rollout_id.json sidecar into the trial dir so build_timeline_data.py
+    # can map each trial to its exact rollout step and session_id for GPU gen time.
+    trial_uri = response.get("trial_uri") or response.get("trial_name", "")
+    trials_dir = os.getenv("HARBOR_TASKS_DIR", "").replace("harbor_tasks", "trials")
+    if trial_uri and trials_dir and rollout_id is not None:
+        sidecar_path = Path(trials_dir) / trial_uri / "miles_rollout_id.json"
+        try:
+            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            sidecar_path.write_text(json.dumps({
+                "rollout_id": int(rollout_id),
+                "session_id": response.get("session_id"),
+            }))
+        except Exception as e:
+            logger.debug(f"Could not write rollout sidecar {sidecar_path}: {e}")
+
+    return result
 
 
 async def abort(args) -> None:
