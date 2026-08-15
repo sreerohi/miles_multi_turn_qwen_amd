@@ -31,6 +31,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
 
+    # Async / disaggregated mode: split GPUs between training and rollout.
+    # When async_mode=True, train_num_gpus GPUs run Megatron and
+    # (num_gpus_per_node - train_num_gpus) GPUs run SGLang concurrently.
+    # When False (default), colocate mode runs both on all GPUs sequentially.
+    async_mode: bool = False
+    train_num_gpus: int = 4  # training GPUs in async mode (rollout = num_gpus_per_node - train_num_gpus)
+
     # Paths
     skip_prepare: bool = False
     base_dir: str = "/root"
@@ -127,8 +134,20 @@ def execute(args: ScriptArgs):
         "--balance-data "
     )
 
-    tp_size = 1
-    ep_size = min(8, args.num_gpus_per_node)
+    # Parallelism: derive TP and EP from the number of GPUs available for training.
+    # Async mode: train_num_gpus GPUs for Megatron, rest for SGLang rollout.
+    # Colocate mode: all num_gpus_per_node GPUs shared between training and rollout.
+    train_gpus = args.train_num_gpus if args.async_mode else args.num_gpus_per_node
+    rollout_gpus = args.num_gpus_per_node - train_gpus if args.async_mode else args.num_gpus_per_node
+
+    # TP=2, EP=4 for 4 training GPUs → DP=2 (same as TP=4,EP=8 on 8 GPUs)
+    # TP=1, EP=8 for 8 training GPUs (colocate)
+    if train_gpus <= 4:
+        tp_size = 2
+        ep_size = min(4, train_gpus)
+    else:
+        tp_size = 1
+        ep_size = min(8, train_gpus)
 
     perf_args = (
         f"--tensor-model-parallel-size {tp_size} "
@@ -165,7 +184,7 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {args.num_gpus_per_node} "
+        f"--rollout-num-gpus-per-engine {rollout_gpus} "
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-cuda-graph-max-bs 512 "
         "--sglang-moe-runner-backend triton "
@@ -185,18 +204,32 @@ def execute(args: ScriptArgs):
         "--session-server-port 30000 "
     )
 
+    if args.async_mode:
+        # Async/disaggregated: training and rollout run on separate dedicated GPUs
+        # concurrently. No colocation flags needed.
+        placement_args = (
+            f"--actor-num-nodes {args.num_nodes} "
+            f"--actor-num-gpus-per-node {train_gpus} "
+            f"--rollout-num-gpus {rollout_gpus} "
+        )
+    else:
+        # Colocate: all GPUs shared; training and rollout run sequentially.
+        placement_args = (
+            "--colocate "
+            "--no-offload-train "
+            "--no-offload-rollout "
+            f"--actor-num-nodes {args.num_nodes} "
+            f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+            f"--rollout-num-gpus {args.num_gpus_per_node} "
+        )
+
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
-        "--colocate "
-        "--no-offload-train "
-        "--no-offload-rollout "
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--rollout-num-gpus {args.num_gpus_per_node} "
+        f"{placement_args}"
     )
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
@@ -261,6 +294,8 @@ def execute(args: ScriptArgs):
     if getattr(torch.version, "hip", None):
         extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
 
+    train_script = "train_async.py" if args.async_mode else "train.py"
+
     U.execute_train(
         train_args=train_args,
         config=args,
@@ -268,6 +303,7 @@ def execute(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
         extra_env_vars=extra_env_vars,
+        train_script=train_script,
     )
 
 
