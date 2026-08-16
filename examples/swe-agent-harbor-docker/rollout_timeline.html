@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qwen3-CodeContests — Rollout + Training Pipeline (real data)</title>
+<style>
+  :root{--bg:#f7f8fa;--panel:#fff;--line:#e5e7eb;--text:#111827;--muted:#6b7280;
+    --cpu:#2563eb;--gpu:#16a34a;--net:#d97706;--mixed:#7c3aed;--accent:#e11d48;--unk:#9ca3af;
+    --pspawn:#2563eb;--pinstall:#d97706;--prun:#7c3aed;--pverify:#0891b2;--pteardown:#64748b;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:14px 24px 12px;background:var(--panel);border-bottom:1px solid var(--line);}
+  h1{margin:0 0 4px;font-size:18px;}
+  .src{margin:6px 0 0;font-size:12px;color:var(--muted);background:#f1f5f9;border:1px solid var(--line);border-radius:8px;padding:7px 10px;} .src b{color:#111827;}
+  .wrap{display:flex;gap:18px;align-items:flex-start;padding:16px 24px 80px;}
+  .side{position:sticky;top:14px;width:330px;flex:0 0 330px;display:flex;flex-direction:column;gap:14px;max-height:94vh;overflow:auto;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+  .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;}
+  .ctl{margin-bottom:12px;} .ctl label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;} .ctl input[type=range]{width:100%;}
+  .toggle{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:7px;}
+  #ridVal{font-size:22px;font-weight:700;color:var(--accent);}
+  .hint{font-size:12px;color:var(--muted);background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:8px 10px;}
+  .kv{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12px;} .kv .k{color:var(--muted);} .kv .v{font-variant-numeric:tabular-nums;font-weight:600;text-align:right;} .kv .v.q{color:var(--unk);}
+  .insight{font-size:12px;line-height:1.5;} .insight h3{font-size:12px;margin:12px 0 4px;color:var(--accent);} .insight p{margin:0 0 6px;color:#374151;} .insight b{color:#111827;}
+  .legend .row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;} .sw{width:13px;height:13px;border-radius:3px;flex:0 0 13px;}
+  .chart{flex:1 1 auto;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;}
+  svg{display:block;} .bar{cursor:pointer;} .bar:hover{filter:brightness(1.08);}
+  .barlabel{font-size:11px;fill:#fff;font-weight:600;pointer-events:none;} .barsub{font-size:10px;fill:rgba(255,255,255,.9);pointer-events:none;}
+  .barlabel.dark{fill:#374151;} .barsub.dark{fill:#6b7280;}
+  .lanehdr{font-size:10px;fill:var(--muted);font-weight:700;} .grid{stroke:var(--line);stroke-width:1;}
+  .tick{fill:var(--muted);font-size:10px;font-variant-numeric:tabular-nums;}
+  #tip{position:fixed;pointer-events:none;z-index:20;max-width:300px;background:#111827;color:#f9fafb;border-radius:8px;padding:9px 11px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .05s;} #tip .k{color:#9ca3af;} #tip .g{color:#4ade80;} #tip .r{color:#f87171;}
+  .pill{display:inline-block;padding:1px 6px;border-radius:20px;font-size:10px;font-weight:700;}
+  #err{color:#b91c1c;padding:20px;font-size:13px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Qwen3-30B-A3B · CodeContests — rollout + training pipeline</h1>
+  <div class="src" id="src">loading…</div>
+</header>
+
+<div class="wrap">
+  <aside class="side">
+    <div class="card">
+      <h2>Rollout ID (step)</h2>
+      <div class="ctl"><div><span id="ridVal"></span></div><input id="rid" type="range" min="0" max="56" step="1" value="6" /></div>
+      <div class="ctl"><label>Zoom (px/s): <span id="scaleVal"></span></label><input id="scale" type="range" min="0.3" max="5" step="0.1" value="0.7" /></div>
+      <label class="toggle"><input id="hw" type="checkbox" /> Hardware view (color everything by CPU/GPU/Network)</label>
+      <div class="hint"><b>rollout_time</b>: click to reveal its <b>64 real trials</b> (one column each; hover for metrics). <b>train_time</b>/<b>update_weights</b>: click to expand internals in place.</div>
+    </div>
+    <div class="card"><h2>Logged metrics · step <span id="ridVal2"></span></h2><div class="kv" id="kv"></div></div>
+    <div class="card insight"><h2>Answers</h2><div id="insightBody"></div></div>
+    <div class="card legend"><h2>Legend</h2><div id="legend"></div></div>
+  </aside>
+  <div class="chart"><svg id="svg"></svg><div id="err"></div></div>
+</div>
+<div id="tip"></div>
+
+<script>
+const WC={cpu:"#2563eb",gpu:"#16a34a",net:"#d97706",mixed:"#7c3aed"};
+const GC={rollout:"#2563eb",train:"#16a34a",weights:"#db2777",wait:"#9ca3af"};
+const WL={cpu:"CPU",gpu:"GPU",net:"Network",mixed:"CPU+GPU+Net"};
+const PHASE=[["spawn","var(--pspawn)","spawn"],["install","var(--pinstall)","install"],["agent_run","var(--prun)","agent_run"],["verifier","var(--pverify)","verifier"],["teardown","var(--pteardown)","teardown"]];
+const PCOL={spawn:"#2563eb",install:"#d97706",agent_run:"#7c3aed",verifier:"#0891b2",teardown:"#64748b"};
+// which hardware each trial phase mainly uses (for Hardware view)
+const PHASE_WHERE={spawn:"cpu",install:"net",agent_run:"mixed",verifier:"cpu",teardown:"cpu"};
+const AXIS_W=58,LANE_W=210,LANE_GAP=14,TOP=64,LEFT=10,MIN_H=9,COLW=13;
+const svg=document.getElementById("svg"),tip=document.getElementById("tip");
+const NS="http://www.w3.org/2000/svg";
+const el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
+let scale=0.7,hardwareView=false,rid=6,DATA=null,SRC=null,TRIAL=null,PER=null;
+const expanded={rollout:false,train:false,weights:false};
+const g=(s,k)=>(s&&k in s)?s[k]:null;
+const fmt=v=>v==null?"?":(v<1?v.toFixed(2):v.toFixed(1));
+
+async function boot(){
+  try{
+    DATA=await (await fetch("timeline_metrics.json",{cache:"no-store"})).json();
+    SRC =await (await fetch("timeline_source.json",{cache:"no-store"})).json();
+    TRIAL=await (await fetch("trial_phase_stats.json",{cache:"no-store"})).json();
+    PER =await (await fetch("per_step_trials.json",{cache:"no-store"})).json();
+  }catch(e){ document.getElementById("err").textContent="Serve over HTTP (python3 -m http.server) — file:// blocks fetch."; return; }
+  const ids=Object.keys(DATA).map(Number).sort((a,b)=>a-b);
+  const rng=document.getElementById("rid"); rng.min=ids[0]; rng.max=ids[ids.length-1];
+  document.getElementById("src").innerHTML=
+    `<b>Sources:</b> per-step = ${SRC.source}; per-trial = each step's <b>real 64 trials</b> mapped by wall-clock window (per_step_trials.json, from result.json + trajectory.json). Bars use logged values only; “?” = not logged.`;
+  buildLegend(); render();
+}
+
+function model(){
+  const s=DATA[rid], sN=DATA[rid+1]||s;
+  return {s,R:g(s,"perf/rollout_time"),Rn:g(sN,"perf/rollout_time")||g(s,"perf/rollout_time"),tt:g(s,"perf/train_time"),uw:g(s,"perf/update_weights_time")};
+}
+
+function render(){
+  const s=DATA[rid]; if(!s) return;
+  document.getElementById("scaleVal").textContent=scale.toFixed(1);
+  document.getElementById("ridVal").textContent="step "+rid;
+  document.getElementById("ridVal2").textContent=rid;
+  const M=model(),R=M.R,tt=M.tt,uw=M.uw;
+
+  const bars=[];
+  bars.push({lane:0,start:0,dur:R,label:"rollout_time (step "+rid+")",metric:"perf/rollout_time",where:"mixed",grp:"rollout",action:"rollout"});
+  bars.push({lane:0,start:R,dur:M.Rn,label:"rollout_time (step "+(rid+1)+") — overlaps train",metric:"perf/rollout_time",where:"mixed",grp:"rollout",faded:true});
+  bars.push({lane:1,start:0,dur:R,label:"train_wait (idle, waiting for rollout "+rid+")",metric:"perf/train_wait_time",where:"cpu",grp:"wait",faded:true});
+  if(tt!=null){
+    if(!expanded.train) bars.push({lane:1,start:R,dur:tt,label:"train_time (step "+rid+")",metric:"perf/train_time",where:"gpu",grp:"train",action:"train"});
+    else{ let t=R; for(const [lab,k,w] of [["data_preprocess","perf/data_preprocess_time","mixed"],["ref_log_probs","perf/ref_log_probs_time","gpu"],["log_probs","perf/log_probs_time","gpu"],["actor_train","perf/actor_train_time","gpu"]]){const d=g(s,k); if(d!=null){bars.push({lane:1,start:t,dur:d,label:"  "+lab,metric:k,where:w,grp:"train",action:"train",seg:true});t+=d;}}
+      bars.push({lane:1,start:t,dur:Math.max(R+tt-t,0),label:"  advantages+gather+ref_update (?)",metric:"— not logged",where:"gpu",grp:"train",action:"train",seg:true,unlogged:true}); }
+  }
+  if(uw!=null){ const us=R+(tt||0);
+    if(!expanded.weights) bars.push({lane:1,start:us,dur:uw,label:"update_weights",metric:"perf/update_weights_time",where:"net",grp:"weights",action:"weights"});
+    else{ const impl=g(s,"perf/update_weights_implementation_time"),fin=g(s,"perf/finalize_and_resume_engines_time"); let t=us;
+      if(impl!=null){bars.push({lane:1,start:t,dur:impl,label:"  push weights → engines",metric:"perf/update_weights_implementation_time",where:"net",grp:"weights",action:"weights",seg:true});t+=impl;}
+      if(fin!=null) bars.push({lane:1,start:t,dur:fin,label:"  finalize + resume",metric:"perf/finalize_and_resume_engines_time",where:"mixed",grp:"weights",action:"weights",seg:true}); }
+  }
+
+  const trials=(expanded.rollout&&PER[rid])?PER[rid].slice():null;
+  if(trials) trials.sort((a,b)=>(b.total||0)-(a.total||0)); // slowest first → tallest at left
+
+  const trialsX=laneX(2);
+  const maxT=Math.max(...bars.map(b=>b.start+b.dur), R||0);
+  const W=trialsX + (trials?trials.length*COLW+40:LANE_W) + 16;
+  const H=TOP+maxT*scale+40;
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  svg.setAttribute("width",W); svg.setAttribute("height",H); svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.appendChild(el("text",{x:laneX(0)+2,y:TOP-34,class:"lanehdr"})).textContent="ROLLOUT WORKER  (click → 64 trials)";
+  svg.appendChild(el("text",{x:laneX(1)+2,y:TOP-34,class:"lanehdr"})).textContent="TRAINER  (starts AFTER its rollout · click to expand)";
+  if(trials){ svg.appendChild(el("text",{x:trialsX,y:TOP-34,class:"lanehdr"})).textContent="64 REAL TRIALS of step "+rid+" (concurrent · tallest ≈ rollout_time · hover for metrics)"; }
+  const divX=laneX(1)-LANE_GAP/2; svg.appendChild(el("line",{x1:divX,y1:TOP-40,x2:divX,y2:H-10,stroke:"#cbd5e1","stroke-width":1.5,"stroke-dasharray":"3 3"}));
+  const tickStep=maxT>600?120:(maxT>200?60:30);
+  for(let u=0;u<=maxT;u+=tickStep){const y=TOP+u*scale; svg.appendChild(el("line",{x1:AXIS_W,y1:y,x2:W-8,y2:y,class:"grid"})); svg.appendChild(el("text",{x:4,y:y+3,class:"tick"})).textContent=u+"s";}
+
+  for(const b of bars) drawBar(b);
+  if(trials) drawTrials(trials, trialsX);
+  buildKV(s); buildInsight(M,trials);
+}
+function laneX(l){return AXIS_W+LEFT+l*(LANE_W+LANE_GAP);}
+
+function drawBar(b){
+  const x=laneX(b.lane), y=TOP+b.start*scale, h=Math.max(MIN_H,b.dur*scale);
+  const fill=hardwareView?WC[b.where]:GC[b.grp];
+  const gg=el("g",{});
+  gg.appendChild(el("rect",{x:b.seg?x+10:x,y,width:b.seg?LANE_W-10:LANE_W,height:h,rx:3,fill,"fill-opacity":b.faded?0.3:(b.unlogged?0.4:0.92),
+    stroke:b.unlogged?"var(--unk)":"rgba(17,24,39,.55)","stroke-width":1,"shape-rendering":"crispEdges","stroke-dasharray":b.unlogged?"4 3":"",class:"bar"}));
+  const caret=b.action==="train"?(expanded.train?"▾ ":"▸ "):b.action==="weights"?(expanded.weights?"▾ ":"▸ "):b.action==="rollout"?(expanded.rollout?"▾ ":"⊞ "):"";
+  if(h>=15){const t=el("text",{x:(b.seg?x+17:x+7),y:y+13,class:"barlabel"+(b.faded?" dark":"")}); t.textContent=(b.seg?"":caret)+b.label; gg.appendChild(t);}
+  if(h>=28){const t=el("text",{x:(b.seg?x+17:x+7),y:y+26,class:"barsub"+(b.faded?" dark":"")}); t.textContent=fmt(b.dur)+"s · "+WL[b.where]; gg.appendChild(t);}
+  gg.addEventListener("mousemove",e=>showBarTip(e,b)); gg.addEventListener("mouseleave",()=>tip.style.opacity=0);
+  if(b.action==="train") gg.addEventListener("click",()=>{expanded.train=!expanded.train;render();});
+  if(b.action==="weights") gg.addEventListener("click",()=>{expanded.weights=!expanded.weights;render();});
+  if(b.action==="rollout") gg.addEventListener("click",()=>{expanded.rollout=!expanded.rollout;render();});
+  svg.appendChild(gg);
+}
+
+function drawTrials(trials, x0){
+  trials.forEach((tr,i)=>{
+    const x=x0+i*COLW, off=tr.offset||0;
+    const phaseDurs={spawn:tr.spawn,install:tr.install,agent_run:tr.agent_run,verifier:tr.verifier};
+    const known=["spawn","install","agent_run","verifier"].reduce((a,k)=>a+(phaseDurs[k]||0),0);
+    phaseDurs.teardown=(tr.total!=null)?Math.max(tr.total-known,0):null;
+    let t=off; const gg=el("g",{});
+    for(const key of ["spawn","install","agent_run","verifier","teardown"]){
+      const d=phaseDurs[key]; if(d==null) continue;
+      const y=TOP+t*scale, hh=Math.max(1,d*scale);
+      const col=hardwareView?WC[PHASE_WHERE[key]]:PCOL[key];
+      gg.appendChild(el("rect",{x,y,width:COLW-2,height:hh,fill:col,"fill-opacity":.92,stroke:"rgba(255,255,255,.5)","stroke-width":.4,"shape-rendering":"crispEdges"}));
+      t+=d;
+    }
+    // pass/fail cap
+    const pass=tr.reward!=null&&tr.reward>=1;
+    gg.appendChild(el("rect",{x,y:TOP+off*scale-3,width:COLW-2,height:3,fill:pass?"#16a34a":(tr.reward!=null?"#dc2626":"#9ca3af")}));
+    gg.style&&(gg.style.cursor="pointer");
+    gg.addEventListener("mousemove",e=>showTrialTip(e,tr,i));
+    gg.addEventListener("mouseleave",()=>tip.style.opacity=0);
+    svg.appendChild(gg);
+  });
+}
+
+function showBarTip(e,b){
+  const c=WC[b.where], st=b.unlogged?"❌ not logged":b.faded?"idle / overlap":"✅ logged";
+  tip.innerHTML=`<b>${b.label.trim()}</b> <span class="pill" style="background:${c}22;color:${c}">${WL[b.where]}</span><br>
+    <span class="k">duration</span> ${fmt(b.dur)}s<br><span class="k">metric</span> ${b.metric||"—"}<br><span class="k">${st}</span>`+
+    (b.action==="rollout"?"<br><span class='k'>click → 64 trial columns</span>":b.action?"<br><span class='k'>click → expand</span>":"");
+  pos(e);
+}
+function showTrialTip(e,tr,i){
+  const pass=tr.reward!=null&&tr.reward>=1;
+  tip.innerHTML=`<b>trial #${i+1}</b> · ${tr.name}<br>
+    <span class="k">reward</span> <span class="${pass?'g':'r'}">${tr.reward==null?'?':tr.reward}${pass?' ✓ pass':(tr.reward!=null?' ✗ fail':'')}</span> &nbsp; <span class="k">turns</span> ${tr.turns==null?'?':tr.turns}<br>
+    <span class="k">spawn</span> ${fmt(tr.spawn)}s &nbsp; <span class="k">install</span> ${fmt(tr.install)}s<br>
+    <span class="k">agent_run</span> ${fmt(tr.agent_run)}s &nbsp; <span class="k">verifier</span> ${fmt(tr.verifier)}s<br>
+    <span class="k">total</span> ${fmt(tr.total)}s &nbsp; <span class="k">starts @</span> +${fmt(tr.offset)}s`;
+  pos(e);
+}
+function pos(e){ tip.style.opacity=1; let left=e.clientX+14; if(left+300>window.innerWidth) left=e.clientX-300; tip.style.left=left+"px"; tip.style.top=(e.clientY+14)+"px"; }
+
+function buildKV(s){
+  const rows=["perf/rollout_time","perf/step_time","perf/train_wait_time","perf/train_time","perf/wait_time_ratio","perf/actor_train_time","perf/log_probs_time","perf/ref_log_probs_time","perf/data_preprocess_time","perf/update_weights_time","agent/agent_run_time_mean","agent/eval_time_mean","agent/turns_mean","rollout/raw_reward","perf/tokens_per_gpu_per_sec"];
+  document.getElementById("kv").innerHTML=rows.map(k=>{const v=g(s,k); return `<div class="k">${k.replace(/^(perf|agent|rollout)\//,"")}</div><div class="v${v==null?" q":""}">${v==null?"?":v}</div>`;}).join("");
+}
+function buildInsight(M,trials){
+  const s=M.s, R=M.R, ratio=g(s,"perf/wait_time_ratio"), tt=M.tt, step=g(s,"perf/step_time");
+  let tmax="?",npass="?",n="?";
+  if(trials&&trials.length){ n=trials.length; tmax=fmt(Math.max(...trials.map(t=>t.total||0))); npass=trials.filter(t=>t.reward>=1).length; }
+  document.getElementById("insightBody").innerHTML=`
+    <h3>Which tasks for this step?</h3><p>The <b>${n} real trials</b> of step ${rid}, mapped by wall-clock window (rollout ended at the perf-line time; window = [end−rollout_time, end]). Click rollout_time to see them; hover any column.</p>
+    <h3>Do they add up to rollout_time?</h3><p><b>Yes now.</b> They run <b>concurrently</b>; rollout_time (${fmt(R)}s) ≈ the <b>slowest</b> trial total (${tmax}s). Pass: <b>${npass}/${n}</b>.</p>
+    <h3>Matched to training?</h3><p>train_async awaits rollout ${rid}, then trains (rollout_id=${rid}); step_time ${fmt(step)}s ≈ rollout_time, idle ratio ${ratio==null?'?':ratio}.</p>`;
+}
+function buildLegend(){
+  const sub=t=>`<div class="row" style="color:var(--muted);font-weight:700;margin:10px 0 4px">${t}</div>`;
+  const phase=PHASE.map(([lab,,key])=>`<div class="row"><span class="sw" style="background:${PCOL[key]}"></span>${lab}</div>`).join("");
+  const compute=Object.entries(WL).map(([k,v])=>`<div class="row"><span class="sw" style="background:${WC[k]}"></span>${v}</div>`).join("");
+  document.getElementById("legend").innerHTML=
+    sub(hardwareView?"Trial phases (dimmed in hardware view)":"Trial phases")+phase+
+    `<div class="row" style="margin-top:6px"><span class="sw" style="background:#16a34a"></span>pass (reward≥1)</div>
+     <div class="row"><span class="sw" style="background:#dc2626"></span>fail</div>`+
+    sub("Compute (CPU / GPU / Network)")+compute+
+    `<div class="row"><span class="sw" style="background:#9ca3af;opacity:.35"></span>idle / overlap</div>`+
+    sub("Interaction")+`<div class="row">⊞ open 64 trials · ▸ expand internals</div>`;
+}
+document.getElementById("rid").addEventListener("input",e=>{rid=+e.target.value;expanded.train=expanded.weights=false;render();});
+document.getElementById("scale").addEventListener("input",e=>{scale=+e.target.value;render();});
+document.getElementById("hw").addEventListener("change",e=>{hardwareView=e.target.checked;buildLegend();render();});
+boot();
+</script>
+</body>
+</html>

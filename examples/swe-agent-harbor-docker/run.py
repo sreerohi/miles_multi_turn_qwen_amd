@@ -68,6 +68,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    miles_trials_dir: str = os.environ.get("MILES_TRIALS_DIR", "")  # where Harbor writes trial result dirs
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
@@ -281,6 +282,7 @@ def execute(args: ScriptArgs):
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
+        "MILES_TRIALS_DIR": args.miles_trials_dir,
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip

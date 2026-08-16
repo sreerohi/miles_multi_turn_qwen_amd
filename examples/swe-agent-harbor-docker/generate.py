@@ -18,6 +18,7 @@ Components:
 """
 
 import logging
+import os
 
 from miles.rollout.base_types import RolloutFnTrainInput, RolloutFnTrainOutput
 from miles.rollout.inference_rollout.inference_rollout_common import InferenceRolloutFn
@@ -113,6 +114,7 @@ class RolloutFn(InferenceRolloutFn):
     """Rollout function with agent metrics aggregation."""
 
     async def _call_train(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
+        os.environ["MILES_ROLLOUT_ID"] = str(input.rollout_id)
         output = await super()._call_train(input)
 
         all_samples = []
