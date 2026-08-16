@@ -188,3 +188,14 @@ async def abort(args) -> None:
         logger.info(f"Flushed agent server {agent_server_url}: {result}")
     except Exception as e:
         logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
+
+    # Force-close the shared httpx client so any pending /run POSTs get an
+    # immediate connection error instead of waiting for TCP keepalive (~210s)
+    # or the 7200s asyncio.wait_for backstop to fire.
+    global _agent_server_client
+    if _agent_server_client is not None:
+        try:
+            await _agent_server_client.aclose()
+        except Exception:
+            pass
+        _agent_server_client = None
