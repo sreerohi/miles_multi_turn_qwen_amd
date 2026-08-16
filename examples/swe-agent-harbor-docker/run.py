@@ -77,6 +77,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
     wandb_run_name: str = "glm47-flash-swe-tito"
+    # "online" uploads live; "offline" writes locally (never blocks on network — use
+    # this when wandb.log() hangs in shared/multi-rank mode); "disabled" skips entirely.
+    wandb_mode: str = os.environ.get("WANDB_MODE", "offline")
+    wandb_dir: str = os.environ.get("WANDB_DIR", "/root/models/wandb")
 
     # Prometheus settings
     use_prometheus: bool = True
@@ -246,6 +250,7 @@ def execute(args: ScriptArgs):
             f"--wandb-project {args.wandb_project} "
             f"--wandb-group {args.wandb_run_name} "
             f"--wandb-key {args.wandb_key} "
+            f"--wandb-mode {args.wandb_mode} "
         )
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
@@ -283,6 +288,7 @@ def execute(args: ScriptArgs):
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         "MILES_TRIALS_DIR": args.miles_trials_dir,
+        "WANDB_DIR": args.wandb_dir,
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
