@@ -143,8 +143,12 @@ async def run(
 
     # Write miles_rollout_id.json sidecar into the trial dir so build_timeline_data.py
     # can map each trial to its exact rollout step and session_id for GPU gen time.
-    trial_uri = response.get("trial_uri") or response.get("trial_name", "")
+    # Harbor returns "trial_dir" (absolute path) or "trial_name" (basename).
+    # trial_uri was the old field name — Harbor never sent it.
+    trial_dir_raw = response.get("trial_dir") or response.get("trial_uri") or response.get("trial_name", "")
     trials_dir = os.getenv("MILES_TRIALS_DIR", "")
+    # trial_dir may be absolute (/data/miles_ci/trials/<name>) or just the basename
+    trial_uri = os.path.basename(trial_dir_raw.rstrip("/")) if trial_dir_raw else ""
     if trial_uri and trials_dir and rollout_id is not None:
         sidecar_path = Path(trials_dir) / trial_uri / "miles_rollout_id.json"
         try:
