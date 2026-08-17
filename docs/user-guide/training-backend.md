@@ -158,8 +158,9 @@ The layout also decides how `update_weights` gets the weights across. Colocated,
 is on the same device, so the actor hands over CUDA IPC handles and nothing crosses the
 network. Disaggregated, the weights have to travel, and `--update-weight-transfer-mode`
 picks how: `broadcast` (the default) sends them over the training-to-engine process group,
-`p2p` uses [RDMA point-to-point](/advanced/p2p-weight-transfer), and `disk-delta` publishes
-only the bytes that changed since the last sync for each engine to pull.
+`p2p` uses [RDMA point-to-point](/advanced/p2p-weight-transfer), and
+[`disk-delta`](/advanced/disaggregated-rollout) publishes only the bytes that changed since
+the last sync for each engine to pull.
 
 On a node with fewer than 8 usable GPUs, set `--num-gpus-per-node` too, otherwise the
 rollout side still assumes 8. And `--fully-async` cannot be colocated: its whole point is
@@ -358,8 +359,8 @@ Memory, once the layout is set:
 
 Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
 the optimizer to host memory and back, gated on `--offload-train`. The deeper offload
-targets are Megatron-only: `--offload-train-target disk` asserts the Megatron backend, and
-`--stream-optimizer-state-to-disk` builds on it.
+targets are Megatron-only: both `--offload-train-target disk` and
+`--stream-optimizer-state-to-disk` assert the Megatron backend.
 
 ### 3. Precision
 
