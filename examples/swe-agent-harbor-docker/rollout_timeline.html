@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Qwen3-CodeContests — Rollout + Training Pipeline (real data)</title>
+<title>Qwen3-Coder-30B · SWE-bench — Rollout + Training Pipeline</title>
 <style>
   :root{--bg:#f7f8fa;--panel:#fff;--line:#e5e7eb;--text:#111827;--muted:#6b7280;
     --cpu:#2563eb;--gpu:#16a34a;--net:#d97706;--mixed:#7c3aed;--accent:#e11d48;--unk:#9ca3af;
@@ -37,7 +37,7 @@
 </head>
 <body>
 <header>
-  <h1>Qwen3-30B-A3B · CodeContests — rollout + training pipeline</h1>
+  <h1>Qwen3-Coder-30B-A3B · SWE-bench — rollout + training pipeline</h1>
   <div class="src" id="src">loading…</div>
 </header>
 
@@ -48,10 +48,8 @@
       <div class="ctl"><div><span id="ridVal"></span></div><input id="rid" type="range" min="0" max="56" step="1" value="6" /></div>
       <div class="ctl"><label>Zoom (px/s): <span id="scaleVal"></span></label><input id="scale" type="range" min="0.3" max="5" step="0.1" value="0.7" /></div>
       <label class="toggle"><input id="hw" type="checkbox" /> Hardware view (color everything by CPU/GPU/Network)</label>
-      <div class="hint"><b>rollout_time</b>: click to reveal its <b>64 real trials</b> (one column each; hover for metrics). <b>train_time</b>/<b>update_weights</b>: click to expand internals in place.</div>
     </div>
     <div class="card"><h2>Logged metrics · step <span id="ridVal2"></span></h2><div class="kv" id="kv"></div></div>
-    <div class="card insight"><h2>Answers</h2><div id="insightBody"></div></div>
     <div class="card legend"><h2>Legend</h2><div id="legend"></div></div>
   </aside>
   <div class="chart"><svg id="svg"></svg><div id="err"></div></div>
@@ -101,8 +99,11 @@ async function boot(){
 }
 
 function model(){
-  const s=DATA[rid], sN=DATA[rid+1]||s;
-  return {s,R:g(s,"perf/rollout_time"),Rn:g(sN,"perf/rollout_time")||g(s,"perf/rollout_time"),tt:g(s,"perf/train_time"),uw:g(s,"perf/update_weights_time")};
+  const s=DATA[rid], sN=DATA[rid+1]||s, sPrev=DATA[rid-1]||{};
+  return {s,R:g(s,"perf/rollout_time"),Rn:g(sN,"perf/rollout_time")||g(s,"perf/rollout_time"),
+    tt:g(s,"perf/train_time"),uw:g(s,"perf/update_weights_time"),
+    trainWait:g(s,"perf/train_wait_time"),
+    prevTrain:rid>0?g(sPrev,"perf/train_time"):null};
 }
 
 function render(){
@@ -111,11 +112,19 @@ function render(){
   document.getElementById("ridVal").textContent="step "+rid;
   document.getElementById("ridVal2").textContent=rid;
   const M=model(),R=M.R,tt=M.tt,uw=M.uw;
+  const prevTrain=M.prevTrain, trainWait=M.trainWait;
 
   const bars=[];
   bars.push({lane:0,start:0,dur:R,label:"rollout_time (step "+rid+")",metric:"perf/rollout_time",where:"mixed",grp:"rollout",action:"rollout"});
   bars.push({lane:0,start:R,dur:M.Rn,label:"rollout_time (step "+(rid+1)+") — overlaps train",metric:"perf/rollout_time",where:"mixed",grp:"rollout",faded:true});
-  bars.push({lane:1,start:0,dur:R,label:"train_wait (idle, waiting for rollout "+rid+")",metric:"perf/train_wait_time",where:"cpu",grp:"wait",faded:true});
+  // In async mode, step (rid-1)'s training runs concurrently with rollout rid.
+  // Show it first, then the actual idle wait for rollout rid to finish.
+  if(rid>0 && prevTrain!=null){
+    bars.push({lane:1,start:0,dur:prevTrain,label:"train_time (step "+(rid-1)+")",metric:"perf/train_time",where:"gpu",grp:"train",faded:true});
+  }
+  const waitStart=rid>0&&prevTrain!=null?prevTrain:0;
+  const waitDur=trainWait!=null?trainWait:(R-waitStart);
+  bars.push({lane:1,start:waitStart,dur:waitDur,label:"train_wait (idle, waiting for rollout "+rid+")",metric:"perf/train_wait_time",where:"cpu",grp:"wait",faded:true});
   if(tt!=null){
     if(!expanded.train) bars.push({lane:1,start:R,dur:tt,label:"train_time (step "+rid+")",metric:"perf/train_time",where:"gpu",grp:"train",action:"train"});
     else{ let t=R; for(const [lab,k,w] of [["data_preprocess","perf/data_preprocess_time","mixed"],["ref_log_probs","perf/ref_log_probs_time","gpu"],["log_probs","perf/log_probs_time","gpu"],["actor_train","perf/actor_train_time","gpu"]]){const d=g(s,k); if(d!=null){bars.push({lane:1,start:t,dur:d,label:"  "+lab,metric:k,where:w,grp:"train",action:"train",seg:true});t+=d;}}
@@ -146,7 +155,7 @@ function render(){
 
   for(const b of bars) drawBar(b);
   if(trials) drawTrials(trials, trialsX);
-  buildKV(s); buildInsight(M,trials);
+  buildKV(s);
 }
 function laneX(l){return AXIS_W+LEFT+l*(LANE_W+LANE_GAP);}
 
@@ -212,15 +221,6 @@ function pos(e){ tip.style.opacity=1; let left=e.clientX+14; if(left+300>window.
 function buildKV(s){
   const rows=["perf/rollout_time","perf/step_time","perf/train_wait_time","perf/train_time","perf/wait_time_ratio","perf/actor_train_time","perf/log_probs_time","perf/ref_log_probs_time","perf/data_preprocess_time","perf/update_weights_time","agent/agent_run_time_mean","agent/eval_time_mean","agent/turns_mean","rollout/raw_reward","perf/tokens_per_gpu_per_sec"];
   document.getElementById("kv").innerHTML=rows.map(k=>{const v=g(s,k); return `<div class="k">${k.replace(/^(perf|agent|rollout)\//,"")}</div><div class="v${v==null?" q":""}">${v==null?"?":v}</div>`;}).join("");
-}
-function buildInsight(M,trials){
-  const s=M.s, R=M.R, ratio=g(s,"perf/wait_time_ratio"), tt=M.tt, step=g(s,"perf/step_time");
-  let tmax="?",npass="?",n="?";
-  if(trials&&trials.length){ n=trials.length; tmax=fmt(Math.max(...trials.map(t=>t.total||0))); npass=trials.filter(t=>t.reward>=1).length; }
-  document.getElementById("insightBody").innerHTML=`
-    <h3>Which tasks for this step?</h3><p>The <b>${n} real trials</b> of step ${rid}, mapped by wall-clock window (rollout ended at the perf-line time; window = [end−rollout_time, end]). Click rollout_time to see them; hover any column.</p>
-    <h3>Do they add up to rollout_time?</h3><p><b>Yes now.</b> They run <b>concurrently</b>; rollout_time (${fmt(R)}s) ≈ the <b>slowest</b> trial total (${tmax}s). Pass: <b>${npass}/${n}</b>.</p>
-    <h3>Matched to training?</h3><p>train_async awaits rollout ${rid}, then trains (rollout_id=${rid}); step_time ${fmt(step)}s ≈ rollout_time, idle ratio ${ratio==null?'?':ratio}.</p>`;
 }
 function buildLegend(){
   const sub=t=>`<div class="row" style="color:var(--muted);font-weight:700;margin:10px 0 4px">${t}</div>`;
