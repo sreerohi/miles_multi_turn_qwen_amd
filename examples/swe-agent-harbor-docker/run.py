@@ -193,6 +193,7 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-cuda-graph-max-bs 512 "
         "--sglang-moe-runner-backend triton "
+        f"--sglang-context-length {args.max_seq_len} "
         f"--sglang-tool-call-parser {args.sglang_tool_call_parser} "
         f"--sglang-reasoning-parser {args.sglang_reasoning_parser} "
         "--sglang-router-port 31000 "
