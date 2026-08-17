@@ -189,13 +189,16 @@ async def abort(args) -> None:
     except Exception as e:
         logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
 
-    # Force-close the shared httpx client so any pending /run POSTs get an
-    # immediate connection error instead of waiting for TCP keepalive (~210s)
-    # or the 7200s asyncio.wait_for backstop to fire.
-    global _agent_server_client
-    if _agent_server_client is not None:
-        try:
-            await _agent_server_client.aclose()
-        except Exception:
-            pass
-        _agent_server_client = None
+    # Force-close the miles session-server httpx client so any in-flight
+    # collect_samples or DELETE /sessions calls unblock immediately.
+    # Without this, a CLOSE_WAIT connection from the session server never
+    # triggers epoll (the asyncio loop never wakes for it) causing abort()
+    # to hang indefinitely. Harbor /run connections are handled cleanly by
+    # Harbor's own task.cancel() → HTTP response path and don't need this.
+    try:
+        from miles.utils import http_utils as _http_utils
+        if _http_utils._http_client is not None:
+            await _http_utils._http_client.aclose()
+            _http_utils._http_client = None
+    except Exception:
+        pass
