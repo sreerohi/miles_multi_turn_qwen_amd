@@ -58,6 +58,17 @@
 </div>
 <div id="tip"></div>
 
+<!-- Trajectory Modal — must be in DOM before the script runs -->
+<div id="traj-modal" style="display:none;position:fixed;inset:0;background:#0008;z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:10px;width:min(860px,95vw);max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px #0004">
+    <div style="padding:14px 18px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px">
+      <span style="font-weight:700;font-size:1.05em;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="traj-title">Trajectory</span>
+      <button id="traj-close" style="border:none;background:#f3f4f6;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:1.1em">✕</button>
+    </div>
+    <div id="traj-body" style="overflow-y:auto;padding:14px 18px;flex:1"></div>
+  </div>
+</div>
+
 <script>
 const WC={cpu:"#2563eb",gpu:"#16a34a",net:"#d97706",mixed:"#7c3aed"};
 const GC={rollout:"#2563eb",train:"#16a34a",weights:"#db2777",wait:"#9ca3af"};
@@ -175,6 +186,7 @@ function drawTrials(trials, x0){
     gg.style&&(gg.style.cursor="pointer");
     gg.addEventListener("mousemove",e=>showTrialTip(e,tr,i));
     gg.addEventListener("mouseleave",()=>tip.style.opacity=0);
+    gg.addEventListener("click",()=>openTrajectory(tr));
     svg.appendChild(gg);
   });
 }
@@ -225,7 +237,108 @@ function buildLegend(){
 document.getElementById("rid").addEventListener("input",e=>{rid=+e.target.value;expanded.train=expanded.weights=false;render();});
 document.getElementById("scale").addEventListener("input",e=>{scale=+e.target.value;render();});
 document.getElementById("hw").addEventListener("change",e=>{hardwareView=e.target.checked;buildLegend();render();});
+
+// ── Trajectory modal ──────────────────────────────────────────────────────────
+const ROLE_STYLE = {
+  system:    {bg:"#f1f5f9", border:"#94a3b8", label:"System",    icon:"⚙"},
+  user:      {bg:"#eff6ff", border:"#3b82f6", label:"Task / User", icon:"📋"},
+  assistant: {bg:"#faf5ff", border:"#9333ea", label:"LLM Response", icon:"🤖"},
+  tool:      {bg:"#f0fdf4", border:"#22c55e", label:"Tool Result",  icon:"🔧"},
+  exit:      {bg:"#fff1f2", border:"#f43f5e", label:"Exit",         icon:"🏁"},
+};
+
+function openTrajectory(tr) {
+  const modal = document.getElementById("traj-modal");
+  const body  = document.getElementById("traj-body");
+  const title = document.getElementById("traj-title");
+  title.textContent = tr.name || "Trial Trajectory";
+  body.innerHTML = "<p style='color:#6b7280'>Loading trajectory…</p>";
+  modal.style.display = "flex";
+
+  // Try to load from per_step_trials.json embedded name → derive path
+  const trajUrl = "traj/" + tr.name + ".json";
+  fetch(trajUrl)
+    .then(r => { if(!r.ok) throw new Error("not found"); return r.json(); })
+    .then(data => renderTrajectory(body, data, tr))
+    .catch(() => {
+      body.innerHTML = `<p style='color:#ef4444'>Trajectory file not found at <code>${trajUrl}</code>.<br>
+        Run <code>python build_timeline_data.py --export-trajs</code> to export trajectories alongside the JSON data files.</p>`;
+    });
+}
+
+function renderTrajectory(container, data, tr) {
+  const messages = data.messages || [];
+  const pass = tr.reward != null && tr.reward >= 1;
+  let html = `<div style="margin-bottom:12px;padding:8px 12px;background:${pass?"#f0fdf4":"#fff1f2"};border-radius:6px;border-left:4px solid ${pass?"#16a34a":"#ef4444"}">
+    <b>${pass?"✅ PASS":"❌ FAIL"}</b> &nbsp; reward=${tr.reward ?? "?"} &nbsp; turns=${tr.turns ?? "?"} &nbsp; total=${tr.total ? tr.total.toFixed(0)+"s" : "?"}
+  </div>`;
+
+  messages.forEach((msg, idx) => {
+    const role = msg.role || "unknown";
+    const style = ROLE_STYLE[role] || {bg:"#f9fafb", border:"#d1d5db", label:role, icon:"❓"};
+    const toolCalls = msg.tool_calls || [];
+    const thinkingRaw = msg.reasoning_content || "";
+
+    let contentHtml = "";
+
+    // Thinking / reasoning block
+    if (thinkingRaw) {
+      const thinking = esc(thinkingRaw).replace(/\n/g,"<br>");
+      contentHtml += `<details style="margin-bottom:6px"><summary style="cursor:pointer;color:#7c3aed;font-size:0.85em">💭 Thinking (${thinkingRaw.length} chars)</summary>
+        <div style="margin-top:4px;padding:6px;background:#f5f3ff;border-radius:4px;font-size:0.82em;white-space:pre-wrap;max-height:300px;overflow-y:auto">${thinking}</div></details>`;
+    }
+
+    // Tool calls (assistant calling bash/edit/etc)
+    toolCalls.forEach(tc => {
+      const fn = tc.function || {};
+      const name = fn.name || "?";
+      let args = "";
+      try { const a = JSON.parse(fn.arguments||"{}"); args = a.command || a.path || JSON.stringify(a,null,2); } catch(e){ args = fn.arguments || ""; }
+      contentHtml += `<div style="margin-bottom:6px;padding:6px 8px;background:#fff7ed;border:1px solid #f97316;border-radius:4px">
+        <span style="font-weight:600;color:#c2410c;font-size:0.85em">🔨 ${name}</span>
+        <pre style="margin:4px 0 0;font-size:0.8em;white-space:pre-wrap;max-height:200px;overflow-y:auto;background:#fff">${esc(args)}</pre></div>`;
+    });
+
+    // Main content
+    let rawContent = "";
+    if (Array.isArray(msg.content)) {
+      rawContent = msg.content.map(c => typeof c === "string" ? c : (c.text || c.content || JSON.stringify(c))).join("\n");
+    } else {
+      rawContent = String(msg.content || "");
+    }
+    if (rawContent.trim()) {
+      const maxLen = 2000;
+      const truncated = rawContent.length > maxLen;
+      const preview = esc(rawContent.slice(0, maxLen)).replace(/\n/g,"<br>");
+      contentHtml += `<div style="font-size:0.85em;white-space:pre-wrap;line-height:1.5;max-height:300px;overflow-y:auto">${preview}${truncated?`<span style='color:#9ca3af'>… [${rawContent.length - maxLen} more chars]</span>`:""}</div>`;
+    }
+
+    if (!contentHtml && !toolCalls.length && !thinkingRaw) {
+      contentHtml = `<span style="color:#9ca3af;font-size:0.82em">(empty)</span>`;
+    }
+
+    html += `<div style="margin-bottom:8px;border:1px solid ${style.border};border-radius:6px;overflow:hidden">
+      <div style="padding:4px 10px;background:${style.border}22;display:flex;align-items:center;gap:6px">
+        <span>${style.icon}</span>
+        <span style="font-weight:600;font-size:0.85em;color:${style.border}">${style.label}</span>
+        <span style="color:#9ca3af;font-size:0.78em;margin-left:auto">#${idx}</span>
+      </div>
+      <div style="padding:8px 10px;background:${style.bg}">${contentHtml}</div>
+    </div>`;
+  });
+
+  if (!messages.length) html += "<p style='color:#6b7280'>No messages found.</p>";
+  container.innerHTML = html;
+}
+
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+document.getElementById("traj-close").addEventListener("click",()=>{document.getElementById("traj-modal").style.display="none";});
+document.getElementById("traj-modal").addEventListener("click",e=>{if(e.target===e.currentTarget) e.currentTarget.style.display="none";});
+document.addEventListener("keydown",e=>{if(e.key==="Escape") document.getElementById("traj-modal").style.display="none";});
+
 boot();
 </script>
+
 </body>
 </html>

@@ -125,9 +125,17 @@ def parse_gen_times(train_log: str) -> dict:
 
 
 def _turns(traj_path: str):
+    # Try canonical trajectory.json format (steps[].source == "agent")
     try:
         steps = json.load(open(traj_path)).get("steps", [])
         return sum(1 for s in steps if isinstance(s, dict) and s.get("source") == "agent")
+    except Exception:
+        pass
+    # Fallback: mini-swe-agent.trajectory.json format (messages[].role == "assistant")
+    alt = os.path.join(os.path.dirname(traj_path), "mini-swe-agent.trajectory.json")
+    try:
+        msgs = json.load(open(alt)).get("messages", [])
+        return sum(1 for m in msgs if isinstance(m, dict) and m.get("role") == "assistant")
     except Exception:
         return None
 
@@ -284,6 +292,28 @@ def main():
         path = os.path.join(args.out_dir, fn)
         json.dump(obj, open(path, "w"))
         print(f"wrote {path}  ({os.path.getsize(path)} bytes)")
+
+    # Export trajectory JSONs so the HTML viewer can load them on click.
+    # Create symlinks (not copies) so the HTML viewer can fetch trajectories
+    # without duplicating data on disk.
+    traj_dir = os.path.join(args.out_dir, "traj")
+    os.makedirs(traj_dir, exist_ok=True)
+    exported = 0
+    for row in rows:
+        name = row.get("name", "")
+        if not name:
+            continue
+        src_traj = os.path.join(trials_dir, name, "agent", "mini-swe-agent.trajectory.json")
+        if not os.path.exists(src_traj):
+            src_traj = os.path.join(trials_dir, name, "agent", "trajectory.json")
+        if os.path.exists(src_traj):
+            dst = os.path.join(traj_dir, f"{name}.json")
+            if os.path.islink(dst):
+                os.unlink(dst)  # refresh stale symlink
+            if not os.path.exists(dst):
+                os.symlink(os.path.abspath(src_traj), dst)
+            exported += 1
+    print(f"linked {exported} trajectory files in {traj_dir}/ (symlinks, no copy)")
     print("done — refresh rollout_timeline.html to see the update.")
 
 
