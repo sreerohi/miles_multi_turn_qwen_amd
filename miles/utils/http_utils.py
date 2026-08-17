@@ -281,9 +281,15 @@ def init_http_client(args):
     if args.eval_num_gpus > 0:
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     if _http_client is None:
+        # Use a read timeout so CLOSE_WAIT connections (where the server sent
+        # FIN but the socket is not registered with epoll) do not block forever.
+        # asyncio.wait_for(timeout=120) in collect_samples is unreliable for
+        # CLOSE_WAIT because the fd is de-registered from epoll after cancellation,
+        # so the asyncio timer never fires. An httpx-level read timeout uses the
+        # asyncio transport's built-in deadline, which survives fd de-registration.
         _http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=_client_concurrency),
-            timeout=httpx.Timeout(None),
+            timeout=httpx.Timeout(None, read=120.0),
         )
 
     # Optionally initialize distributed POST via Ray without changing interfaces
