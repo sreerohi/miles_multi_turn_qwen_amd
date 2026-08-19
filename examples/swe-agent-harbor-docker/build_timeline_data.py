@@ -154,14 +154,20 @@ def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
         vr = r.get("verifier_result") or {}
         rw = vr.get("rewards") or {}
         reward = rw.get("reward", next(iter(rw.values()), None)) if isinstance(rw, dict) else None
-        # Native sidecar (server.py): rollout_id (owning step) + session_id (for gen_time).
+        # Extract session_id from lock.json (always present): Harbor embeds it in
+        # the OPENAI_API_BASE URL as .../sessions/<session_id>/v1
         rid, sid = None, None
-        sidecar = os.path.join(os.path.dirname(fp), "miles_rollout_id.json")
-        if os.path.exists(sidecar):
+        lock = os.path.join(os.path.dirname(fp), "lock.json")
+        if os.path.exists(lock):
             try:
-                meta = json.load(open(sidecar))
-                rid = int(meta["rollout_id"]) if meta.get("rollout_id") is not None else None
-                sid = meta.get("session_id")
+                lk = json.load(open(lock))
+                base_url = (
+                    lk.get("agent", {}).get("env", {}).get("OPENAI_API_BASE", "")
+                )
+                # URL format: http://host:port/sessions/<uuid>/v1
+                parts = [p for p in base_url.split("/") if p]
+                if "sessions" in parts:
+                    sid = parts[parts.index("sessions") + 1]
             except Exception:
                 pass
         agent_run = _timing(r, "agent_execution")

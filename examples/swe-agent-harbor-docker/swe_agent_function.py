@@ -11,11 +11,9 @@ differentiation (environment, grading harness, agent selection).
 """
 
 import asyncio
-import json
 import logging
 import os
 import socket
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
@@ -140,25 +138,6 @@ async def run(
         "eval_report": response.get("eval_report", {}),
         "agent_metrics": response.get("agent_metrics", {}),
     }
-
-    # Write miles_rollout_id.json sidecar into the trial dir so build_timeline_data.py
-    # can map each trial to its exact rollout step and session_id for GPU gen time.
-    # Harbor returns "trial_dir" (absolute path) or "trial_name" (basename).
-    # trial_uri was the old field name — Harbor never sent it.
-    trial_dir_raw = response.get("trial_dir") or response.get("trial_uri") or response.get("trial_name", "")
-    trials_dir = os.getenv("MILES_TRIALS_DIR", "")
-    # trial_dir may be absolute (/data/miles_ci/trials/<name>) or just the basename
-    trial_uri = os.path.basename(trial_dir_raw.rstrip("/")) if trial_dir_raw else ""
-    if trial_uri and trials_dir and rollout_id is not None:
-        sidecar_path = Path(trials_dir) / trial_uri / "miles_rollout_id.json"
-        try:
-            sidecar_path.parent.mkdir(parents=True, exist_ok=True)
-            sidecar_path.write_text(json.dumps({
-                "rollout_id": int(rollout_id),
-                "session_id": response.get("session_id"),
-            }))
-        except Exception as e:
-            logger.debug(f"Could not write rollout sidecar {sidecar_path}: {e}")
 
     return result
 
