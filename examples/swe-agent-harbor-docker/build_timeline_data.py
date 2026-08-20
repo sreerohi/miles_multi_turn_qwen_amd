@@ -140,6 +140,98 @@ def _turns(traj_path: str):
         return None
 
 
+def _parse_trial_log_phases(trial_dir: str) -> dict:
+    """Parse timestamped phase markers from trial.log (injected by harbor patch).
+    Returns seconds for each sub-phase, or None if markers not present.
+    """
+    log_path = os.path.join(trial_dir, "trial.log")
+    if not os.path.exists(log_path):
+        return {}
+    import re
+    rx = re.compile(
+        r"(\d{2}:\d{2}:\d{2})\.(\d{3}) \[(SPAWN|INSTALL|AGENT|VERIFIER|TEARDOWN|DOCKER_BUILD|DOCKER_DOWN|DOCKER_UP)_(START|END)\](?:\s*([\d.]+)s)?"
+    )
+    events: dict = {}
+    try:
+        for line in open(log_path, errors="replace"):
+            m = rx.search(line)
+            if not m:
+                continue
+            hh, mm, ss = int(m.group(1)[:2]), int(m.group(1)[3:5]), int(m.group(1)[6:8])
+            ms = int(m.group(2))
+            t = hh * 3600 + mm * 60 + ss + ms / 1000
+            tag, se = m.group(3), m.group(4)
+            key = f"{tag}_{se}"
+            events[key] = t
+            if se == "END" and m.group(5):
+                events[f"{tag}_dur"] = float(m.group(5))
+    except Exception:
+        pass
+    out: dict = {}
+    for tag, field in [("SPAWN","spawn_s"), ("INSTALL","install_s"), ("AGENT","agent_s"),
+                        ("VERIFIER","verifier_s"), ("TEARDOWN","teardown_s"),
+                        ("DOCKER_BUILD","docker_build_s"), ("DOCKER_DOWN","docker_down_s"),
+                        ("DOCKER_UP","docker_up_s")]:
+        if f"{tag}_dur" in events:
+            out[field] = events[f"{tag}_dur"]
+        elif f"{tag}_START" in events and f"{tag}_END" in events:
+            out[field] = round(events[f"{tag}_END"] - events[f"{tag}_START"], 2)
+    return out
+
+
+def _parse_verifier_slow_tests(trial_dir: str) -> list:
+    """Parse pytest --durations=0 output from verifier/test-stdout.txt.
+    Returns [{name, secs}] for each timed test, sorted slowest first.
+    """
+    vlog = os.path.join(trial_dir, "verifier", "test-stdout.txt")
+    if not os.path.exists(vlog):
+        return []
+    import re
+    rx = re.compile(r"^\s*([\d.]+)s\s+call\s+(.+)$")
+    tests = []
+    try:
+        in_slow = False
+        for line in open(vlog, errors="replace"):
+            if "slowest" in line.lower() and "duration" in line.lower():
+                in_slow = True
+                continue
+            if in_slow:
+                m = rx.match(line)
+                if m:
+                    tests.append({"secs": float(m.group(1)), "name": m.group(2).strip()})
+                elif line.strip() and not line.startswith("="):
+                    in_slow = False  # end of block
+    except Exception:
+        pass
+    return sorted(tests, key=lambda x: x["secs"], reverse=True)
+
+
+def _parse_tool_exec_times(trial_dir: str) -> dict | None:
+    """Sum harbor_tool_exec_msec and harbor_llm_wait_msec from trajectory messages."""
+    for traj_name in ("mini-swe-agent.trajectory.json", "trajectory.json"):
+        traj = os.path.join(trial_dir, "agent", traj_name)
+        if not os.path.exists(traj):
+            continue
+        try:
+            msgs = json.load(open(traj)).get("messages", [])
+            tool_ms = sum(
+                m.get("extra", {}).get("harbor_tool_exec_msec") or 0
+                for m in msgs if m.get("role") == "tool"
+            )
+            llm_ms = sum(
+                m.get("extra", {}).get("harbor_llm_wait_msec") or 0
+                for m in msgs if m.get("role") == "assistant"
+            )
+            if tool_ms > 0 or llm_ms > 0:
+                return {
+                    "tool_exec_s": round(tool_ms / 1000, 1),
+                    "llm_wait_s": round(llm_ms / 1000, 1),
+                }
+        except Exception:
+            pass
+    return None
+
+
 def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
     gen_by_session = gen_by_session or {}
     rows = []
@@ -170,16 +262,23 @@ def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
                     sid = parts[parts.index("sessions") + 1]
             except Exception:
                 pass
+        trial_dir = os.path.dirname(fp)
         agent_run = _timing(r, "agent_execution")
         # EXACT GPU vs container-CPU split of agent_run via the session server's gen_time.
         gpu_gen = round(gen_by_session[sid], 1) if sid in gen_by_session else None
         container_cpu = round(agent_run - gpu_gen, 1) if (agent_run is not None and gpu_gen is not None) else None
+        # Sub-phase timing from timestamped trial.log (harbor patch)
+        sub_phases = _parse_trial_log_phases(trial_dir)
+        # Per-test verifier timing from --durations=0 output
+        slow_tests = _parse_verifier_slow_tests(trial_dir)
+        # Per-turn tool/LLM timing from trajectory
+        timing = _parse_tool_exec_times(trial_dir)
         rows.append({
             "st": st_,
             "rollout_id": rid,
-            "name": os.path.basename(os.path.dirname(fp)),
+            "name": os.path.basename(trial_dir),
             "reward": reward,
-            "turns": _turns(os.path.join(os.path.dirname(fp), "agent", "trajectory.json")),
+            "turns": _turns(os.path.join(trial_dir, "agent", "trajectory.json")),
             "total": _dur(r.get("started_at"), r.get("finished_at")),
             "spawn": _timing(r, "environment_setup"),
             "install": _timing(r, "agent_setup"),
@@ -187,6 +286,10 @@ def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
             "verifier": _timing(r, "verifier"),
             "gpu_gen": gpu_gen,              # Σ gen_time for this trial's session (GPU)
             "container_cpu": container_cpu,  # agent_run − gpu_gen (container/tool CPU)
+            "sub_phases": sub_phases or None,           # docker_up_s, install_s, etc.
+            "verifier_slow_tests": slow_tests or None,  # [{name,secs}] from --durations=0
+            "tool_exec_s": timing["tool_exec_s"] if timing else None,
+            "llm_wait_s":  timing["llm_wait_s"]  if timing else None,
         })
     return rows
 

@@ -33,6 +33,11 @@
   #tip{position:fixed;pointer-events:none;z-index:20;max-width:300px;background:#111827;color:#f9fafb;border-radius:8px;padding:9px 11px;font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .05s;} #tip .k{color:#9ca3af;} #tip .g{color:#4ade80;} #tip .r{color:#f87171;}
   .pill{display:inline-block;padding:1px 6px;border-radius:20px;font-size:10px;font-weight:700;}
   #err{color:#b91c1c;padding:20px;font-size:13px;}
+  .agg-btn{padding:4px 9px;border:1px solid var(--line);border-radius:6px;cursor:pointer;font-size:11px;background:var(--panel);color:var(--text);transition:.12s;white-space:nowrap;}
+  .agg-btn.active{background:#2563eb;color:#fff;border-color:#2563eb;}
+  #agg-panel{padding:0 24px 32px;}
+  #agg-panel h3{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 8px;}
+  #agg-panel svg{background:var(--panel);border:1px solid var(--line);border-radius:10px;display:block;overflow:visible;}
 </style>
 </head>
 <body>
@@ -48,12 +53,20 @@
       <div class="ctl"><div><span id="ridVal"></span></div><input id="rid" type="range" min="0" max="56" step="1" value="6" /></div>
       <div class="ctl"><label>Zoom (px/s): <span id="scaleVal"></span></label><input id="scale" type="range" min="0.3" max="5" step="0.1" value="0.7" /></div>
       <label class="toggle"><input id="hw" type="checkbox" /> Hardware view (color everything by CPU/GPU/Network)</label>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:5px">
+        <button class="agg-btn" id="btn-agg-phases"    onclick="toggleAgg('phases')">Aggregate Rollout metrics per trial</button>
+        <button class="agg-btn" id="btn-agg-hw"        onclick="toggleAgg('hardware')">Aggregate hardware per trial</button>
+        <button class="agg-btn" id="btn-agg-allr"      onclick="toggleAgg('all-rollout')">Aggregate Rollout all</button>
+        <button class="agg-btn" id="btn-agg-alls"      onclick="toggleAgg('all-step')">Aggregate Step all</button>
+        <button class="agg-btn" id="btn-agg-trainwait" onclick="toggleAgg('train-wait')">Train Wait vs Rollout+Train</button>
+      </div>
     </div>
     <div class="card"><h2>Logged metrics · step <span id="ridVal2"></span></h2><div class="kv" id="kv"></div></div>
     <div class="card legend"><h2>Legend</h2><div id="legend"></div></div>
   </aside>
   <div class="chart"><svg id="svg"></svg><div id="err"></div></div>
 </div>
+<div id="agg-panel"></div>
 <div id="tip"></div>
 
 <!-- Trajectory Modal — must be in DOM before the script runs -->
@@ -185,8 +198,17 @@ function drawTrials(trials, x0){
     for(const key of ["spawn","install","agent_run","verifier","teardown"]){
       const d=phaseDurs[key]; if(d==null) continue;
       const y=TOP+t*scale, hh=Math.max(1,d*scale);
-      const col=hardwareView?WC[PHASE_WHERE[key]]:PCOL[key];
-      gg.appendChild(el("rect",{x,y,width:COLW-2,height:hh,fill:col,"fill-opacity":.92,stroke:"rgba(255,255,255,.5)","stroke-width":.4,"shape-rendering":"crispEdges"}));
+      // Always split agent_run into LLM/GPU (green) + bash/CPU (purple) when data available
+      if(key==="agent_run" && tr.gpu_gen!=null && tr.container_cpu!=null){
+        const gpuCol=hardwareView?WC.gpu:"#16a34a";   // green = LLM generation
+        const cpuCol=hardwareView?WC.cpu:PCOL.agent_run; // purple = bash tool exec
+        const hGPU=Math.max(1,tr.gpu_gen*scale), hCPU=Math.max(1,tr.container_cpu*scale);
+        gg.appendChild(el("rect",{x,y,width:COLW-2,height:hGPU,fill:gpuCol,"fill-opacity":.92,stroke:"rgba(255,255,255,.5)","stroke-width":.4,"shape-rendering":"crispEdges"}));
+        gg.appendChild(el("rect",{x,y:y+hGPU,width:COLW-2,height:hCPU,fill:cpuCol,"fill-opacity":.92,stroke:"rgba(255,255,255,.5)","stroke-width":.4,"shape-rendering":"crispEdges"}));
+      } else {
+        const col=hardwareView?WC[PHASE_WHERE[key]]:PCOL[key];
+        gg.appendChild(el("rect",{x,y,width:COLW-2,height:hh,fill:col,"fill-opacity":.92,stroke:"rgba(255,255,255,.5)","stroke-width":.4,"shape-rendering":"crispEdges"}));
+      }
       t+=d;
     }
     // pass/fail cap
@@ -224,17 +246,29 @@ function buildKV(s){
 }
 function buildLegend(){
   const sub=t=>`<div class="row" style="color:var(--muted);font-weight:700;margin:10px 0 4px">${t}</div>`;
-  const phase=PHASE.map(([lab,,key])=>`<div class="row"><span class="sw" style="background:${PCOL[key]}"></span>${lab}</div>`).join("");
-  const compute=Object.entries(WL).map(([k,v])=>`<div class="row"><span class="sw" style="background:${WC[k]}"></span>${v}</div>`).join("");
+  const row=(col,label)=>`<div class="row"><span class="sw" style="background:${col}"></span>${label}</div>`;
+  // Trial phases — agent_run is split into LLM gen + bash exec
+  const phaseRows=[
+    row(PCOL.spawn,   "spawn (docker start)"),
+    row(PCOL.install, "install (internet download)"),
+    row("#16a34a",    "LLM gen — GPU (SGLang token generation)"),
+    row(PCOL.agent_run,"bash exec — CPU (tool commands in sandbox)"),
+    row(PCOL.verifier,"verifier (pytest)"),
+    row(PCOL.teardown,"teardown"),
+  ].join("");
+  // Hardware view colors
+  const hwRows=[
+    row(WC.cpu,   "CPU"),
+    row(WC.net,   "Network (internet)"),
+    row(WC.gpu,   "GPU"),
+    row("#9ca3af","idle / overlap"),
+  ].join("");
   document.getElementById("legend").innerHTML=
-    sub(hardwareView?"Trial phases (dimmed in hardware view)":"Trial phases")+phase+
-    `<div class="row" style="margin-top:6px"><span class="sw" style="background:#16a34a"></span>pass (reward≥1)</div>
-     <div class="row"><span class="sw" style="background:#dc2626"></span>fail</div>`+
-    sub("Compute (CPU / GPU / Network)")+compute+
-    `<div class="row"><span class="sw" style="background:#9ca3af;opacity:.35"></span>idle / overlap</div>`+
+    sub(hardwareView?"Trial phases (hardware view active)":"Trial phases")+phaseRows+
+    sub("Hardware view colors")+hwRows+
     sub("Interaction")+`<div class="row">⊞ open 64 trials · ▸ expand internals</div>`;
 }
-document.getElementById("rid").addEventListener("input",e=>{rid=+e.target.value;expanded.train=expanded.weights=false;render();});
+document.getElementById("rid").addEventListener("input",e=>{rid=+e.target.value;expanded.train=expanded.weights=false;render();renderAggPanel();});
 document.getElementById("scale").addEventListener("input",e=>{scale=+e.target.value;render();});
 document.getElementById("hw").addEventListener("change",e=>{hardwareView=e.target.checked;buildLegend();render();});
 
@@ -338,6 +372,343 @@ document.getElementById("traj-modal").addEventListener("click",e=>{if(e.target==
 document.addEventListener("keydown",e=>{if(e.key==="Escape") document.getElementById("traj-modal").style.display="none";});
 
 boot();
+
+// ── Aggregate charts ──────────────────────────────────────────────────────────
+let aggMode=null;
+
+function toggleAgg(mode){
+  aggMode=aggMode===mode?null:mode;
+  [["phases","phases"],["hardware","hw"],["all-rollout","allr"],["all-step","alls"],["train-wait","trainwait"]].forEach(([m,id])=>{
+    document.getElementById("btn-agg-"+id).classList.toggle("active",aggMode===m);
+  });
+  renderAggPanel();
+}
+
+function renderAggPanel(){
+  const panel=document.getElementById("agg-panel");
+  panel.innerHTML="";
+  if(!aggMode||!DATA||!PER) return;
+  if(aggMode==="phases")       renderAggPhases(panel);
+  else if(aggMode==="hardware") renderAggHardware(panel);
+  else if(aggMode==="all-rollout") renderAggAllRollout(panel);
+  else if(aggMode==="all-step")    renderAggAllStep(panel);
+  else if(aggMode==="train-wait")  renderAggTrainWait(panel);
+}
+
+function mkSVG(w,h){
+  const s=document.createElementNS(NS,"svg");
+  s.setAttribute("width",w); s.setAttribute("height",h);
+  s.setAttribute("viewBox",`0 0 ${w} ${h}`); return s;
+}
+function aggEl(svg,tag,attrs,text){
+  const e=document.createElementNS(NS,tag);
+  for(const k in attrs) e.setAttribute(k,attrs[k]);
+  if(text!=null) e.textContent=text;
+  svg.appendChild(e); return e;
+}
+function aggTip(e,text){ tip.innerHTML=text; pos(e); }
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+function prepTrials(stepRid){
+  return (PER[stepRid]||[]).map(tr=>{
+    const known=(tr.spawn||0)+(tr.install||0)+(tr.agent_run||0)+(tr.verifier||0);
+    return {...tr,_td:tr.total!=null?Math.max(tr.total-known,0):0};
+  });
+}
+
+// Compute mean phase times for a set of trials
+function phaseStats(trials){
+  const mn=ph=>{const v=trials.map(t=>t[ph]||0);return v.length?v.reduce((a,b)=>a+b)/v.length:0;};
+  const sp=mn("spawn"),ins=mn("install"),ar=mn("agent_run"),vr=mn("verifier"),td=mn("_td");
+  const tot=mn("total")||sp+ins+ar+vr+td;
+  const hasGpu=trials.some(t=>t.gpu_gen!=null&&t.gpu_gen>0);
+  const gpu=hasGpu?mn("gpu_gen"):0;      // mean LLM generation time per trial
+  const bash=hasGpu?mn("container_cpu"):0; // mean bash exec time per trial
+  return {spawn:sp,install:ins,agent_run:ar,verifier:vr,teardown:td,total:tot,gpu,bash,hasGpu};
+}
+
+// Compute hardware time fractions.
+// If gpu_gen/container_cpu are available (from session server GEN logs), use them
+// to split agent_run into real GPU + CPU. Otherwise fall back to PHASE_WHERE (mixed).
+function hwStats(trials){
+  const mn=ph=>{const v=trials.map(t=>t[ph]||0);return v.length?v.reduce((a,b)=>a+b)/v.length:0;};
+  const hasGpu=trials.some(t=>t.gpu_gen!=null&&t.gpu_gen>0);
+  const cpu=mn("spawn")+mn("verifier")+mn("_td")+(hasGpu?mn("container_cpu"):0);
+  const net=mn("install");
+  const gpu=hasGpu?mn("gpu_gen"):0;
+  const mixed=hasGpu?0:mn("agent_run"); // falls back to mixed when no split available
+  const total=mn("total")||cpu+net+gpu+mixed;
+  return {cpu,net,gpu,mixed,total};
+}
+
+// Draw one vertical stacked bar. Height = time (abs/maxT)*CHH; labels show %.
+function drawPctBar(svg,x,top,CHH,BW,segments,totalSec,label,isCur,maxT){
+  // segments: [{pct,col,op,name,abs}]
+  const scale=maxT||totalSec||1;
+  let y=top+CHH;
+  let barH=0;
+  for(const seg of segments){
+    if(!seg.abs||seg.abs<0.5) continue;
+    const h=Math.max(2,(seg.abs/scale)*CHH);
+    y-=h; barH+=h;
+    const r=aggEl(svg,"rect",{x,y,width:BW,height:h,fill:seg.col,"fill-opacity":seg.op||.9,rx:1});
+    if(h>14) aggEl(svg,"text",{x:x+BW/2,y:y+h/2+4,"text-anchor":"middle","font-size":9,fill:"#fff","font-weight":"600"},seg.pct.toFixed(0)+"%");
+    r.addEventListener("mousemove",e=>aggTip(e,`<b>${label}</b><br><span class="k">${seg.name}</span> ${seg.abs.toFixed(1)}s (${seg.pct.toFixed(1)}%)`));
+    r.addEventListener("mouseleave",()=>tip.style.opacity=0);
+  }
+  // total time annotation just above bar
+  if(totalSec!=null)
+    aggEl(svg,"text",{x:x+BW/2,y:top+CHH-barH-5,"text-anchor":"middle","font-size":9,fill:isCur?"#e11d48":"#374151","font-weight":"600"},totalSec.toFixed(0)+"s");
+  // step label below
+  aggEl(svg,"text",{x:x+BW/2,y:top+CHH+16,"text-anchor":"middle","font-size":isCur?10:9,fill:isCur?"#e11d48":"#374151","font-weight":isCur?"700":"400"},label);
+  return x+BW;
+}
+
+
+// Draw y-axis time gridlines
+function drawTimeAxis(svg,LW,top,CHH,W,maxT){
+  const tStep=maxT>3600?600:maxT>1200?300:maxT>600?120:maxT>200?60:30;
+  for(let u=0;u<=maxT;u+=tStep){
+    const y=top+CHH-(u/maxT)*CHH;
+    aggEl(svg,"line",{x1:LW,y1:y,x2:W-8,y2:y,stroke:u===0?"#cbd5e1":"#e5e7eb","stroke-width":u===0?1.5:1});
+    aggEl(svg,"text",{x:LW-4,y:y+3,"text-anchor":"end","font-size":9,fill:"#6b7280"},u+"s");
+  }
+}
+
+// Draw a horizontal legend row
+function drawLegend(svg,items,x0,y){
+  let x=x0;
+  for(const [col,op,label] of items){
+    aggEl(svg,"rect",{x,y:y-7,width:10,height:8,fill:col,"fill-opacity":op||.9,rx:2});
+    aggEl(svg,"text",{x:x+13,y,fill:"#374151","font-size":9},label);
+    x+=label.length*5.5+24;
+  }
+}
+
+// ── Chart 1: ONE % bar — mean phase breakdown for current step ────────────────
+function renderAggPhases(panel){
+  const trials=prepTrials(rid);
+  if(!trials.length){panel.innerHTML=`<p style="padding:16px;color:#6b7280">No trial data for step ${rid}.</p>`;return;}
+  const st=phaseStats(trials);
+  const BW=120,CHH=340,LW=46,PAD=60,LEGPAD=28;
+  const W=LW+BW+PAD*2+200; const H=CHH+50+LEGPAD+16;
+  const title=document.createElement("h3");
+  title.textContent=`Rollout phase breakdown — step ${rid} · ${trials.length} trials · mean total ${st.total.toFixed(1)}s · Y = % of total`;
+  panel.appendChild(title);
+  const svg=mkSVG(W,H);
+  drawTimeAxis(svg,LW,10,CHH,W,st.total);
+  const segs=[
+    {pct:st.spawn/st.total*100,  col:PCOL.spawn,  name:"spawn",     abs:st.spawn},
+    {pct:st.install/st.total*100, col:PCOL.install,name:"install",   abs:st.install},
+    {pct:(st.hasGpu?st.gpu:st.agent_run)/st.total*100, col:"#16a34a",      name:"LLM gen (GPU)",  abs:st.hasGpu?st.gpu:st.agent_run},
+    {pct:(st.hasGpu?st.bash:0)/st.total*100,           col:PCOL.agent_run, name:"bash exec (CPU)", abs:st.hasGpu?st.bash:0},
+    {pct:st.verifier/st.total*100,col:PCOL.verifier,name:"verifier", abs:st.verifier},
+    {pct:st.teardown/st.total*100,col:PCOL.teardown,name:"teardown", abs:st.teardown},
+  ];
+  drawPctBar(svg,LW+PAD,10,CHH,BW,segs,st.total,"step "+rid,true,st.total);
+  drawLegend(svg,[
+    [PCOL.spawn,.9,"spawn"],[PCOL.install,.9,"install"],[PCOL.agent_run,.9,"agent_run"],
+    [PCOL.verifier,.9,"verifier"],[PCOL.teardown,.9,"teardown"]],LW,H-LEGPAD+10);
+  panel.appendChild(svg);
+}
+
+// ── Chart 2: ONE % bar — hardware split including train_time as GPU ───────────
+function renderAggHardware(panel){
+  const trials=prepTrials(rid);
+  if(!trials.length){panel.innerHTML=`<p style="padding:16px;color:#6b7280">No trial data for step ${rid}.</p>`;return;}
+  const hw=hwStats(trials);
+  const trainT=g(DATA[rid],"perf/train_time")||0;
+  // Denominator = mean trial total + train_time for this step
+  const denom=hw.total+trainT||1;
+  const BW=120,CHH=340,LW=46,PAD=60,LEGPAD=28;
+  const W=LW+PAD+BW+160; const H=CHH+50+LEGPAD+16;
+  const title=document.createElement("h3");
+  title.textContent=`Hardware split — step ${rid} · CPU=spawn+verify+teardown · Net=install · Mixed=agent_run · GPU=train_time · total=${denom.toFixed(1)}s`;
+  panel.appendChild(title);
+  const svg=mkSVG(W,H);
+  drawTimeAxis(svg,LW,10,CHH,W,denom);
+  const segs=[
+    {pct:hw.cpu/denom*100,   col:WC.cpu,   name:"CPU (spawn+verify+teardown"+(hw.gpu>0?"+tool exec)":")")+" ", abs:hw.cpu},
+    {pct:hw.net/denom*100,   col:WC.net,   name:"Network (install)",                                           abs:hw.net},
+    {pct:hw.gpu/denom*100,   col:WC.gpu,   name:"GPU (agent LLM gen, accumulated across turns)",               abs:hw.gpu},
+    {pct:hw.mixed/denom*100, col:WC.mixed, name:"CPU+GPU+Net (agent_run, no split available)",                 abs:hw.mixed},
+    {pct:trainT/denom*100,   col:"#15803d", name:"GPU (train_time)",                                           abs:trainT},
+  ].filter(s=>s.abs>0);
+  drawPctBar(svg,LW+PAD,10,CHH,BW,segs,denom,"step "+rid,true,denom);
+  drawLegend(svg,[
+    [WC.cpu,.9,"CPU"],[WC.net,.9,"Network"],[WC.gpu,.9,"GPU (agent LLM)"],[WC.mixed,.9,"Mixed (no split)"],[WC.gpu,.9,"GPU (train)"]],
+    LW,H-LEGPAD+10);
+  panel.appendChild(svg);
+}
+
+// ── Compute per-step aggregates for cross-step charts ─────────────────────────
+function allStepPhaseData(){
+  return Object.keys(DATA).map(Number).sort((a,b)=>a-b).map(s=>{
+    const ts=prepTrials(s);
+    const ps=phaseStats(ts);
+    return {step:s,...ps,n:ts.length};
+  });
+}
+function allStepHwData(){
+  return Object.keys(DATA).map(Number).sort((a,b)=>a-b).map(s=>{
+    const ts=prepTrials(s);
+    const hw=hwStats(ts); // now includes real gpu split when available
+    const trainT=g(DATA[s],"perf/train_time")||0;
+    const denom=hw.total+trainT||1;
+    return {step:s,...hw,trainT,denom,n:ts.length};
+  });
+}
+function superAgg(rows,keys){
+  // weight by n (trial count)
+  const totalN=rows.reduce((a,r)=>a+r.n,0)||1;
+  const out={step:"ALL",n:totalN};
+  for(const k of keys) out[k]=rows.reduce((a,r)=>a+(r[k]||0)*r.n,0)/totalN;
+  return out;
+}
+
+// ── Chart 5: train_wait vs (rollout + train) double bar per step ──────────────
+function renderAggTrainWait(panel){
+  const steps=Object.keys(DATA).map(Number).sort((a,b)=>a-b);
+  if(!steps.length) return;
+  const rows=steps.map(s=>{
+    const sd=DATA[s]||{};
+    return{
+      step:s,
+      wait:  g(sd,"perf/train_wait_time")||0,    // Bar A: Megatron idle waiting for rollout
+      rollout:g(sd,"perf/rollout_time")||0,       // Bar B top: rollout ran concurrently
+      train: g(sd,"perf/train_time")||0,          // Bar B bottom: training time
+    };
+  });
+  const maxT=Math.max(...rows.flatMap(d=>[d.wait, d.rollout+d.train]),1);
+  // Double bar per step: gap between pair is small, gap between steps is larger
+  const BW=28,PAIR_GAP=4,STEP_GAP=14,CHH=300,LW=50,LEGPAD=28;
+  const pairW=BW*2+PAIR_GAP;
+  const W=LW+rows.length*(pairW+STEP_GAP)+20;
+  const H=CHH+50+LEGPAD+16;
+  const title=document.createElement("h3");
+  title.textContent="Train Wait vs Rollout + Train per Step — Bar A: train_wait (Megatron idle) · Bar B: rollout_time | train_time (concurrent)";
+  panel.appendChild(title);
+  const svg=mkSVG(W,H);
+  drawTimeAxis(svg,LW,10,CHH,W,maxT);
+  rows.forEach((d,i)=>{
+    const xA=LW+i*(pairW+STEP_GAP);
+    const xB=xA+BW+PAIR_GAP;
+    const isCur=d.step===rid;
+    const stroke=isCur?"#e11d48":"rgba(17,24,39,.3)";
+    // Bar A: train_wait (gray)
+    if(d.wait>0){
+      const h=Math.max(2,(d.wait/maxT)*CHH);
+      const r=aggEl(svg,"rect",{x:xA,y:10+CHH-h,width:BW,height:h,fill:"#9ca3af","fill-opacity":.85,rx:2,stroke,"stroke-width":isCur?1.5:.5});
+      r.addEventListener("mousemove",e=>aggTip(e,`<b>step ${d.step}</b><br><span class="k">train_wait</span> ${d.wait.toFixed(1)}s`));
+      r.addEventListener("mouseleave",()=>tip.style.opacity=0);
+      aggEl(svg,"text",{x:xA+BW/2,y:10+CHH-h-4,"text-anchor":"middle","font-size":8,fill:"#6b7280"},d.wait.toFixed(0)+"s");
+    }
+    // Bar B: rollout_time (blue) stacked under train_time (green)
+    if(d.rollout+d.train>0){
+      let y=10+CHH;
+      for(const [v,col,name] of [[d.train,GC.train,"train_time"],[d.rollout,GC.rollout,"rollout_time"]]){
+        if(v<0.5) continue;
+        const h=Math.max(2,(v/maxT)*CHH); y-=h;
+        const r=aggEl(svg,"rect",{x:xB,y,width:BW,height:h,fill:col,"fill-opacity":.88,rx:1,stroke,"stroke-width":isCur?1.5:.5});
+        r.addEventListener("mousemove",e=>aggTip(e,`<b>step ${d.step}</b><br><span class="k">${name}</span> ${v.toFixed(1)}s`));
+        r.addEventListener("mouseleave",()=>tip.style.opacity=0);
+        if(h>14) aggEl(svg,"text",{x:xB+BW/2,y:y+h/2+4,"text-anchor":"middle","font-size":8,fill:"#fff","font-weight":"600"},v.toFixed(0)+"s");
+      }
+      const tot=(d.rollout+d.train);
+      aggEl(svg,"text",{x:xB+BW/2,y:10+CHH-(tot/maxT)*CHH-4,"text-anchor":"middle","font-size":8,fill:isCur?"#e11d48":"#374151"},tot.toFixed(0)+"s");
+    }
+    // Step label (centered under the pair)
+    aggEl(svg,"text",{x:xA+pairW/2,y:10+CHH+16,"text-anchor":"middle","font-size":isCur?10:9,
+      fill:isCur?"#e11d48":"#374151","font-weight":isCur?"700":"400"},d.step);
+    // "A" / "B" sub-labels
+    aggEl(svg,"text",{x:xA+BW/2,y:10+CHH+26,"text-anchor":"middle","font-size":8,fill:"#9ca3af"},"W");
+    aggEl(svg,"text",{x:xB+BW/2,y:10+CHH+26,"text-anchor":"middle","font-size":8,fill:"#9ca3af"},"R+T");
+  });
+  drawLegend(svg,[
+    ["#9ca3af",.85,"W = train_wait (Megatron idle)"],
+    [GC.rollout,.88,"R = rollout_time (concurrent)"],
+    [GC.train,.88,"T = train_time"],
+  ],LW,H-LEGPAD+10);
+  panel.appendChild(svg);
+}
+
+// ── Chart 3: % phase per step + super-aggregate ───────────────────────────────
+function renderAggAllRollout(panel){
+  const rows=allStepPhaseData();
+  if(!rows.length) return;
+  const all=superAgg(rows,["spawn","install","agent_run","verifier","teardown","total","gpu","bash"]);
+  all.hasGpu=rows.some(r=>r.hasGpu);
+  const allRows=[...rows,all];
+  const BW=Math.max(24,Math.min(60,Math.floor((Math.min(window.innerWidth-100,1400)-60)/allRows.length)-6));
+  const GAP=4,CHH=300,LW=46,LEGPAD=28;
+  const W=LW+(BW+GAP)*allRows.length+20; const H=CHH+50+LEGPAD+16;
+  const title=document.createElement("h3");
+  title.textContent="Rollout Timing Breakdown Across Steps";
+  panel.appendChild(title);
+  const maxT3=Math.max(...allRows.map(d=>d.total||0),1);
+  const svg=mkSVG(W,H);
+  drawTimeAxis(svg,LW,10,CHH,W,maxT3);
+  allRows.forEach((d,i)=>{
+    const tot=d.total||1;
+    const segs=[
+      {pct:d.spawn/tot*100,    col:PCOL.spawn,    name:"spawn",     abs:d.spawn},
+      {pct:d.install/tot*100,  col:PCOL.install,  name:"install",   abs:d.install},
+      {pct:(d.hasGpu?d.gpu:d.agent_run)/tot*100, col:"#16a34a",      name:"LLM gen (GPU)",  abs:d.hasGpu?d.gpu:d.agent_run},
+      {pct:(d.hasGpu?d.bash:0)/tot*100,          col:PCOL.agent_run, name:"bash exec (CPU)", abs:d.hasGpu?d.bash:0},
+      {pct:d.verifier/tot*100, col:PCOL.verifier, name:"verifier",  abs:d.verifier},
+      {pct:d.teardown/tot*100, col:PCOL.teardown, name:"teardown",  abs:d.teardown},
+    ];
+    const isCur=d.step===rid;
+    const isAll=d.step==="ALL";
+    const x=LW+i*(BW+GAP);
+    if(isAll){ aggEl(svg,"line",{x1:x-GAP/2,y1:10,x2:x-GAP/2,y2:H-30,stroke:"#94a3b8","stroke-width":1.5,"stroke-dasharray":"4 3"}); }
+    drawPctBar(svg,x,10,CHH,BW,segs,tot,String(d.step),isCur&&!isAll,maxT3);
+    if(isAll) aggEl(svg,"text",{x:x+BW/2,y:10+CHH+28,"text-anchor":"middle","font-size":9,fill:"#7c3aed","font-weight":"700"},"(ALL)");
+  });
+  drawLegend(svg,[
+    [PCOL.spawn,.9,"spawn"],[PCOL.install,.9,"install (internet download)"],
+    ["#16a34a",.9,"LLM gen (GPU)"],[PCOL.agent_run,.9,"bash exec (CPU)"],
+    [PCOL.verifier,.9,"verifier"],[PCOL.teardown,.9,"teardown"]],LW,H-LEGPAD+10);
+  panel.appendChild(svg);
+}
+
+// ── Chart 4: % hardware per step (incl train GPU) + super-aggregate ───────────
+function renderAggAllStep(panel){
+  const rows=allStepHwData();
+  if(!rows.length) return;
+  const all=superAgg(rows,["cpu","net","mixed","trainT","denom"]);
+  all.denom=all.cpu+all.net+all.mixed+all.trainT||1;
+  const allRows=[...rows,all];
+  const BW=Math.max(24,Math.min(60,Math.floor((Math.min(window.innerWidth-100,1400)-60)/allRows.length)-6));
+  const GAP=4,CHH=300,LW=46,LEGPAD=28;
+  const W=LW+(BW+GAP)*allRows.length+20; const H=CHH+50+LEGPAD+16;
+  const title=document.createElement("h3");
+  title.textContent="Hardware Breakdown Across Steps";
+  panel.appendChild(title);
+  const maxT4=Math.max(...allRows.map(d=>d.denom||0),1);
+  const svg=mkSVG(W,H);
+  drawTimeAxis(svg,LW,10,CHH,W,maxT4);
+  allRows.forEach((d,i)=>{
+    const den=d.denom||1;
+    const segs=[
+      {pct:d.cpu/den*100,    col:WC.cpu,   name:"CPU (spawn+verify+teardown+tool exec)", abs:d.cpu},
+      {pct:d.net/den*100,    col:WC.net,   name:"Network (install)",                     abs:d.net},
+      {pct:d.gpu/den*100,    col:WC.gpu,   name:"GPU (agent LLM gen accumulated)",        abs:d.gpu},
+      {pct:d.mixed/den*100,  col:WC.mixed, name:"CPU+GPU+Net (no split available)",       abs:d.mixed},
+      {pct:d.trainT/den*100, col:"#15803d",name:"GPU (train_time)",                       abs:d.trainT},
+    ].filter(s=>s.abs>0);
+    const isCur=d.step===rid;
+    const isAll=d.step==="ALL";
+    const x=LW+i*(BW+GAP);
+    if(isAll){ aggEl(svg,"line",{x1:x-GAP/2,y1:10,x2:x-GAP/2,y2:H-30,stroke:"#94a3b8","stroke-width":1.5,"stroke-dasharray":"4 3"}); }
+    drawPctBar(svg,x,10,CHH,BW,segs,den,String(d.step),isCur&&!isAll,maxT4);
+    if(isAll) aggEl(svg,"text",{x:x+BW/2,y:10+CHH+28,"text-anchor":"middle","font-size":9,fill:"#7c3aed","font-weight":"700"},"(ALL)");
+  });
+  drawLegend(svg,[
+    [WC.cpu,.9,"CPU"],[WC.net,.9,"Network"],[WC.gpu,.9,"GPU (agent LLM)"],[WC.mixed,.9,"Mixed (no split)"],[WC.gpu,.9,"GPU (train)"]],
+    LW,H-LEGPAD+10);
+  panel.appendChild(svg);
+}
 </script>
 
 </body>
