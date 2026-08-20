@@ -1,4 +1,4 @@
-"""Qwen3-Coder SWE-bench agentic training launcher (AMD ROCm / MI300X).
+"""Qwen3-Coder SWE-bench agentic training launcher (AMD ROCm / MI350X).
 
 Standalone async launcher for Qwen3-30B-A3B and Qwen3-Coder-30B-A3B on Harbor.
 Training and rollout run on separate GPU sets concurrently (train_async.py).
