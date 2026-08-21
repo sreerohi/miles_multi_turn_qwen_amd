@@ -1,8 +1,7 @@
 """Qwen3-Coder SWE-bench agentic training launcher (AMD ROCm / MI350X).
 
-Standalone async launcher for Qwen3-30B-A3B and Qwen3-Coder-30B-A3B on Harbor.
+Standalone async launcher for Qwen3-Coder-30B-A3B on Harbor.
 Training and rollout run on separate GPU sets concurrently (train_async.py).
-Pass --coder to switch to the Coder variant (rope_theta 1e7 vs 1e6).
 
 Prerequisites:
     - HF checkpoint converted to torch_dist (run without --skip-prepare first)
@@ -10,8 +9,8 @@ Prerequisites:
     - /data/miles_ci/trials writable
 
 Usage:
-    python run-qwen3-swe.py --coder --async-mode
-    python run-qwen3-swe.py --coder --async-mode --skip-prepare \\
+    python run-qwen3-swe.py --async-mode
+    python run-qwen3-swe.py --async-mode --skip-prepare \\
         --prompt-data /root/datasets/swe_gym_lite_clean.jsonl \\
         --wandb-project qwen3-coder-swe \\
         --agent-server-url http://harbor-server:30000 \\
@@ -44,24 +43,19 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     run_id: str = U.create_run_id()
     num_gpus_per_node: int = 8
-    megatron_path: str = "/root/Megatron-LM"
-
-    # Qwen3 model variant — pass --coder to use the Coder checkpoint
-    coder: bool = False
+    megatron_path: str = os.environ.get("MEGATRON_PATH", "")
 
     # Async / disaggregated mode: split GPUs between training and rollout.
     # train_num_gpus GPUs run Megatron; the rest run SGLang concurrently.
     async_mode: bool = False
     train_num_gpus: int = 4
 
-    # Paths — defaults are for Qwen3-Coder-30B-A3B-Instruct; --coder sets these.
-    # Without --coder, base Qwen3-30B-A3B paths are used.
     skip_prepare: bool = False
-    base_dir: str = "/root/models"
-    hf_checkpoint: str = "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-    ref_load: str = "/root/models/Qwen3-Coder-30B-A3B-Instruct_torch_dist"
-    save_dir: str = "/root/models/Qwen3-Coder-30B-A3B-Instruct_agent_v2"
-    prompt_data: str = "/root/datasets/swe_gym_lite_clean.jsonl"
+    base_dir: str = os.environ.get("MILES_BASE_DIR", "")
+    hf_checkpoint: str = os.environ.get("HF_CHECKPOINT", "")
+    ref_load: str = os.environ.get("MILES_REF_LOAD", "")
+    save_dir: str = os.environ.get("MILES_SAVE_DIR", "")
+    prompt_data: str = os.environ.get("MILES_PROMPT_DATA", "")
 
     # Training settings
     max_seq_len: int = 32768
@@ -70,15 +64,29 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_samples_per_prompt: int = 8
     global_batch_size: int = 64
     save_interval: int = 100
-    save_traces_dir: str = "/root/models/traces"
+    save_traces_dir: str = os.environ.get("MILES_SAVE_TRACES_DIR", "")
 
     # Agent settings
     agent_server_url: str = os.environ.get(
         "AGENT_SERVER_URL", os.environ.get("SWE_AGENT_URL", "http://harbor-server:30000")
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
-    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "")
     miles_trials_dir: str = os.environ.get("MILES_TRIALS_DIR", "")
+
+    def __post_init__(self):
+        required = {
+            "megatron_path": self.megatron_path,
+            "hf_checkpoint": self.hf_checkpoint,
+            "ref_load": self.ref_load,
+            "save_dir": self.save_dir,
+            "prompt_data": self.prompt_data,
+            "harbor_tasks_dir": self.harbor_tasks_dir,
+        }
+        missing = [k for k, v in required.items() if not v]
+        if missing:
+            raise ValueError(f"Required fields not set: {', '.join(missing)}")
+
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
@@ -90,7 +98,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # offline: writes locally, never blocks on network (prevents wandb.log() deadlock
     # in multi-rank shared mode); sync manually with `wandb sync --legacy <run-dir>`
     wandb_mode: str = os.environ.get("WANDB_MODE", "offline")
-    wandb_dir: str = os.environ.get("WANDB_DIR", "/root/models/wandb")
+    wandb_dir: str = os.environ.get("WANDB_DIR", "")
 
     # Prometheus settings
     use_prometheus: bool = True
@@ -101,26 +109,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_env_vars: str = ""
 
 
-def _model_cfg(args: ScriptArgs) -> tuple[str, str, str, str, str]:
-    """Return (megatron_model_type, model_name, hf_checkpoint, ref_load, save_dir)."""
-    if args.coder:
-        os.environ["MODEL_ARGS_ROTARY_BASE"] = "10000000"
-        return (
-            "qwen3-30B-A3B",
-            "Qwen3-Coder-30B-A3B-Instruct",
-            "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-            "/root/models/Qwen3-Coder-30B-A3B-Instruct_torch_dist",
-            "/root/models/Qwen3-Coder-30B-A3B-Instruct_agent_v2",
-        )
-    else:
-        os.environ["MODEL_ARGS_ROTARY_BASE"] = "1000000"
-        return (
-            "qwen3-30B-A3B",
-            "Qwen3-30B-A3B",
-            "Qwen/Qwen3-30B-A3B",
-            "/root/models/Qwen3-30B-A3B_torch_dist",
-            "/root/models/Qwen3-30B-A3B_agent_v2",
-        )
+def _model_cfg() -> tuple[str, str]:
+    """Return (megatron_model_type, model_name)."""
+    os.environ["MODEL_ARGS_ROTARY_BASE"] = "10000000"
+    return "qwen3-30B-A3B", "Qwen3-Coder-30B-A3B-Instruct"
 
 
 def cleanup():
@@ -142,29 +134,24 @@ def cleanup():
 
 def prepare(args: ScriptArgs):
     """Convert HF checkpoint to torch_dist format if not already done."""
-    megatron_model_type, model_name, hf_checkpoint, ref_load, _ = _model_cfg(args)
+    megatron_model_type, model_name = _model_cfg()
     U.convert_checkpoint(
         model_name=model_name,
         megatron_model_type=megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
         dir_dst=args.base_dir,
-        hf_checkpoint=hf_checkpoint,
+        hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
     )
 
 
 def execute(args: ScriptArgs):
-    megatron_model_type, model_name, hf_checkpoint, ref_load, save_dir = _model_cfg(args)
-
-    # CLI overrides take precedence over --coder defaults
-    hf_checkpoint = args.hf_checkpoint or hf_checkpoint
-    ref_load = args.ref_load or ref_load
-    save_dir = args.save_dir or save_dir
+    megatron_model_type, model_name = _model_cfg()
 
     ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint} "
-        f"--ref-load {ref_load} "
-        f"--save {save_dir} "
+        f"--hf-checkpoint {args.hf_checkpoint} "
+        f"--ref-load {args.ref_load} "
+        f"--save {args.save_dir} "
         f"--save-interval {args.save_interval} "
     )
 
@@ -334,8 +321,8 @@ def execute(args: ScriptArgs):
     # Parse any extra env vars passed as JSON string (e.g. '{"SGLANG_USE_AITER": "0"}')
     if args.extra_env_vars:
         import json
-        extra_env_vars.update(json.loads(args.extra_env_vars))
 
+        extra_env_vars.update(json.loads(args.extra_env_vars))
 
     train_script = "train_async.py" if args.async_mode else "train.py"
 
