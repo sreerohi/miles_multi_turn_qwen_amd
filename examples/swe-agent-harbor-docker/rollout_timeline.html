@@ -105,7 +105,7 @@ async function boot(){
     PER =await (await fetch("per_step_trials.json",{cache:"no-store"})).json();
   }catch(e){ document.getElementById("err").textContent="Serve over HTTP (python3 -m http.server) — file:// blocks fetch."; return; }
   const ids=Object.keys(DATA).map(Number).sort((a,b)=>a-b);
-  const rng=document.getElementById("rid"); rng.min=ids[0]; rng.max=ids[ids.length-1];
+  const rng=document.getElementById("rid"); rng.min=ids[0]; rng.max=ids[ids.length-1]; rid=ids[0]; rng.value=ids[0];
   document.getElementById("src").innerHTML=
     `<b>Sources:</b> per-step = ${SRC.source}; per-trial = each step's <b>real 64 trials</b> mapped by wall-clock window (per_step_trials.json, from result.json + trajectory.json). Bars use logged values only; “?” = not logged.`;
   buildLegend(); render();
