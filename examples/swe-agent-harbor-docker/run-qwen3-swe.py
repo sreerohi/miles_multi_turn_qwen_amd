@@ -62,6 +62,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_rollout: int = 3000
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 8
+    rollout_submission_granularity: str = "group"
     global_batch_size: int = 64
     save_interval: int = 100
     save_traces_dir: str = os.environ.get("MILES_SAVE_TRACES_DIR", "")
@@ -162,10 +163,10 @@ def execute(args: ScriptArgs):
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--metadata-key metadata "
-        "--rollout-shuffle "
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
+        f"--rollout-submission-granularity {args.rollout_submission_granularity} "
         "--rollout-temperature 0.8 "
         "--rollout-max-response-len 8192 "
         f"--max-seq-len {args.max_seq_len} "
