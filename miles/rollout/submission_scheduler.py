@@ -19,7 +19,15 @@ class GroupLevelSubmission:
     sample_done_callback = None
 
     def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
-        return pending_groups < group_budget
+        result = pending_groups < group_budget
+        if result:
+            import traceback
+            logger.info(
+                "[HAS_CAPACITY=True] pending=%d budget=%d\n%s",
+                pending_groups, group_budget,
+                "".join(traceback.format_stack(limit=15)),
+            )
+        return result
 
     def on_submit(self, groups: list[list[Sample]]) -> None:
         pass
@@ -63,9 +71,18 @@ class SampleBackfillSubmission:
         return done - {waiter}, pending - {waiter}
 
 
+class DroppedGroupSubmission(GroupLevelSubmission):
+    """Submits exactly as many groups as were dropped — no oversampling cascade."""
+
+    def num_to_submit(self, *, pending_groups: int, group_budget: int) -> int:
+        return max(1, group_budget - pending_groups)
+
+
 def make_submission_scheduler(args: Namespace, *, default: str) -> GroupLevelSubmission | SampleBackfillSubmission:
     granularity = args.rollout_submission_granularity or default
     if granularity == "group":
         return GroupLevelSubmission()
+    if granularity == "dropped":
+        return DroppedGroupSubmission()
     assert granularity == "sample", f"unknown submission granularity: {granularity}"
     return SampleBackfillSubmission(args.n_samples_per_prompt)

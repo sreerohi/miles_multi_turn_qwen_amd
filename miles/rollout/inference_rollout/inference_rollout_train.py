@@ -110,7 +110,15 @@ async def generate_rollout_async(
     while len(data) < target_data_size:
         while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
-            samples = data_source(args.over_sampling_batch_size)
+            n_groups = (
+                scheduler.num_to_submit(
+                    pending_groups=len(pendings),
+                    group_budget=target_data_size - len(data),
+                )
+                if hasattr(scheduler, "num_to_submit")
+                else args.over_sampling_batch_size
+            )
+            samples = data_source(n_groups)
             scheduler.on_submit(samples)
             pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
 
