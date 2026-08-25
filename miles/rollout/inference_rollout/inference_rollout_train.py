@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from argparse import Namespace
 from collections.abc import Callable
 
@@ -26,6 +27,7 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     assert not state.aborted
     state.aborted = True
+    t_abort = time.monotonic()
 
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
@@ -36,8 +38,21 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     await call_agent_abort_hook(args)
 
     # make sure all the pending tasks are finished
+    n_pending = len(pendings)
+    logger.warning(
+        "[REPRO drain] START: %d straggler group(s) still pending AFTER oversampling already filled the batch",
+        n_pending,
+    )
+    done_count = 0
     aborted_samples = []
     async for group in as_completed_async(pendings):
+        done_count += 1
+        logger.warning(
+            "[REPRO drain] straggler %d/%d returned at +%.1fs after abort()",
+            done_count,
+            n_pending,
+            time.monotonic() - t_abort,
+        )
         if not args.partial_rollout:
             continue
 
@@ -46,6 +61,12 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
             if sample.response and "start_rollout_id" not in sample.metadata:
                 sample.metadata["start_rollout_id"] = rollout_id
         aborted_samples.append(group)
+
+    logger.warning(
+        "[REPRO drain] DONE: drained %d straggler(s) in %.1fs -- THIS is the oversampling-defeating wait",
+        n_pending,
+        time.monotonic() - t_abort,
+    )
 
     if args.partial_rollout:
         logger.info(f"Collected {sum(len(x) for x in aborted_samples)} partial samples into the data buffer")
@@ -166,6 +187,11 @@ async def generate_rollout_async(
     )
 
     # there are still some unfinished requests, abort them
+    logger.warning(
+        "[REPRO] batch of %d kept groups READY (oversampling succeeded); calling abort() with %d group(s) still pending",
+        len(data),
+        len(pendings),
+    )
     aborted_samples = await abort(state, pendings, rollout_id)
 
     assert len(data) == args.rollout_batch_size, f"Got {len(data)} samples, expected {args.rollout_batch_size}"

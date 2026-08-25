@@ -88,6 +88,10 @@ async def call_agent_abort_hook(args) -> None:
     except (AttributeError, ModuleNotFoundError):
         return  # plugin doesn't expose an abort hook; nothing to tear down
 
+    logger.warning(
+        "[REPRO] call_agent_abort_hook: invoking %s.abort (proves hook path executed; any NOOP is inside the hook, not a missing hook)",
+        module_path,
+    )
     try:
         await abort_hook(args)
     except Exception as e:

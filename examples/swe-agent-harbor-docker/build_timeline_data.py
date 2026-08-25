@@ -232,24 +232,96 @@ def _parse_tool_exec_times(trial_dir: str) -> dict | None:
     return None
 
 
+def _trial_started_at(trial_dir: str, name: str) -> float | None:
+    """Best-effort start time for a trial that never wrote result.json.
+
+    Prefer trial.log's first timestamped event (combined with the date encoded in
+    the trial dir name ``<task>__<YYYYMMDD-HHMMSS>__<suffix>``); fall back to the
+    dir-name timestamp itself. Parsed as a naive datetime -> local epoch, matching
+    how result.json ``started_at`` and the train.log step windows are interpreted,
+    so all three are directly comparable for window assignment.
+    """
+    m = re.search(r"__(\d{8})-(\d{6})__", name)
+    if not m:
+        return None
+    date_str, time_str = m.group(1), m.group(2)
+    log_path = os.path.join(trial_dir, "trial.log")
+    if os.path.exists(log_path):
+        try:
+            for line in open(log_path, errors="replace"):
+                tm = re.match(r"\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})", line)
+                if tm:
+                    return datetime.strptime(date_str, "%Y%m%d").replace(
+                        hour=int(tm.group(1)), minute=int(tm.group(2)),
+                        second=int(tm.group(3)), microsecond=int(tm.group(4)) * 1000,
+                    ).timestamp()
+        except Exception:
+            pass
+    try:
+        return datetime.strptime(f"{date_str}-{time_str}", "%Y%m%d-%H%M%S").timestamp()
+    except Exception:
+        return None
+
+
 def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
     gen_by_session = gen_by_session or {}
     rows = []
-    for fp in glob.glob(os.path.join(trials_dir, "*", "result.json")):
-        try:
-            r = json.load(open(fp))
-        except Exception:
+    for trial_dir in sorted(glob.glob(os.path.join(trials_dir, "*"))):
+        if not os.path.isdir(trial_dir):
             continue
+        name = os.path.basename(trial_dir)
+        fp = os.path.join(trial_dir, "result.json")
+        r = None
+        if os.path.exists(fp):
+            try:
+                r = json.load(open(fp))
+            except Exception:
+                r = None
+
+        # Cancelled/incomplete trial: no parseable result.json. These are the trials
+        # the oversampling abort flushed mid-flight — Harbor cancelled them before they
+        # produced a verifier result, so there is nothing to grade. Surface them anyway
+        # (with partial phase timing from trial.log) so the timeline shows what was killed
+        # instead of silently dropping it.
+        if r is None or _iso(r.get("started_at", "")) is None:
+            if not (
+                os.path.exists(os.path.join(trial_dir, "trial.log"))
+                or os.path.exists(os.path.join(trial_dir, "config.json"))
+            ):
+                continue  # not a real trial dir
+            st_ = _trial_started_at(trial_dir, name)
+            if st_ is None:
+                continue
+            sub_phases = _parse_trial_log_phases(trial_dir)
+            rows.append({
+                "st": st_,
+                "rollout_id": None,
+                "name": name,
+                "cancelled": True,
+                "reward": None,
+                "turns": _turns(os.path.join(trial_dir, "agent", "trajectory.json")),
+                "total": None,
+                "spawn": sub_phases.get("spawn_s"),
+                "install": sub_phases.get("install_s"),
+                "agent_run": sub_phases.get("agent_s"),
+                "verifier": sub_phases.get("verifier_s"),
+                "gpu_gen": None,
+                "container_cpu": None,
+                "sub_phases": sub_phases or None,
+                "verifier_slow_tests": _parse_verifier_slow_tests(trial_dir) or None,
+                "tool_exec_s": None,
+                "llm_wait_s": None,
+            })
+            continue
+
         st_ = _iso(r.get("started_at", ""))
-        if st_ is None:
-            continue
         vr = r.get("verifier_result") or {}
         rw = vr.get("rewards") or {}
         reward = rw.get("reward", next(iter(rw.values()), None)) if isinstance(rw, dict) else None
         # Extract session_id from lock.json (always present): Harbor embeds it in
         # the OPENAI_API_BASE URL as .../sessions/<session_id>/v1
         rid, sid = None, None
-        lock = os.path.join(os.path.dirname(fp), "lock.json")
+        lock = os.path.join(trial_dir, "lock.json")
         if os.path.exists(lock):
             try:
                 lk = json.load(open(lock))
@@ -262,7 +334,6 @@ def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
                     sid = parts[parts.index("sessions") + 1]
             except Exception:
                 pass
-        trial_dir = os.path.dirname(fp)
         agent_run = _timing(r, "agent_execution")
         # EXACT GPU vs container-CPU split of agent_run via the session server's gen_time.
         gpu_gen = round(gen_by_session[sid], 1) if sid in gen_by_session else None
@@ -276,7 +347,8 @@ def parse_trials(trials_dir: str, gen_by_session: dict | None = None) -> list:
         rows.append({
             "st": st_,
             "rollout_id": rid,
-            "name": os.path.basename(trial_dir),
+            "name": name,
+            "cancelled": False,
             "reward": reward,
             "turns": _turns(os.path.join(trial_dir, "agent", "trajectory.json")),
             "total": _dur(r.get("started_at"), r.get("finished_at")),
@@ -334,6 +406,7 @@ def build_per_step(rows: list, wins: dict) -> dict:
             "name": t["name"], "reward": t["reward"], "turns": t["turns"], "total": t["total"],
             "spawn": t["spawn"], "install": t["install"], "agent_run": t["agent_run"],
             "verifier": t["verifier"], "gpu_gen": t.get("gpu_gen"), "container_cpu": t.get("container_cpu"),
+            "cancelled": t.get("cancelled", False),
             "offset": round(t["st"] - s0, 1),
         })
 

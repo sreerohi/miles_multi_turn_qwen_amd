@@ -191,6 +191,7 @@ function drawBar(b){
 function drawTrials(trials, x0){
   trials.forEach((tr,i)=>{
     const x=x0+i*COLW, off=tr.offset||0;
+    const cancelled=!!tr.cancelled; // flushed on abort — no result.json, render outline-only
     const phaseDurs={spawn:tr.spawn,install:tr.install,agent_run:tr.agent_run,verifier:tr.verifier};
     const known=["spawn","install","agent_run","verifier"].reduce((a,k)=>a+(phaseDurs[k]||0),0);
     phaseDurs.teardown=(tr.total!=null)?Math.max(tr.total-known,0):null;
@@ -198,8 +199,12 @@ function drawTrials(trials, x0){
     for(const key of ["spawn","install","agent_run","verifier","teardown"]){
       const d=phaseDurs[key]; if(d==null) continue;
       const y=TOP+t*scale, hh=Math.max(1,d*scale);
+      // Cancelled trials: colored outline, no fill (so they read as "started, never finished").
+      if(cancelled){
+        const col=hardwareView?WC[PHASE_WHERE[key]]:PCOL[key];
+        gg.appendChild(el("rect",{x:x+0.5,y:y+0.5,width:COLW-3,height:Math.max(1,hh-1),fill:"none",stroke:col,"stroke-width":1.2,"stroke-dasharray":"2 1.5","shape-rendering":"crispEdges"}));
       // Always split agent_run into LLM/GPU (green) + bash/CPU (purple) when data available
-      if(key==="agent_run" && tr.gpu_gen!=null && tr.container_cpu!=null){
+      } else if(key==="agent_run" && tr.gpu_gen!=null && tr.container_cpu!=null){
         const gpuCol=hardwareView?WC.gpu:"#16a34a";   // green = LLM generation
         const cpuCol=hardwareView?WC.cpu:PCOL.agent_run; // purple = bash tool exec
         const hGPU=Math.max(1,tr.gpu_gen*scale), hCPU=Math.max(1,tr.container_cpu*scale);
@@ -211,9 +216,13 @@ function drawTrials(trials, x0){
       }
       t+=d;
     }
-    // pass/fail cap
-    const pass=tr.reward!=null&&tr.reward>=1;
-    gg.appendChild(el("rect",{x,y:TOP+off*scale-3,width:COLW-2,height:3,fill:pass?"#16a34a":(tr.reward!=null?"#dc2626":"#9ca3af")}));
+    // cap: pass/fail for completed trials; amber outline for cancelled (flushed) ones
+    if(cancelled){
+      gg.appendChild(el("rect",{x:x+0.5,y:TOP+off*scale-3,width:COLW-3,height:3,fill:"none",stroke:"#d97706","stroke-width":1}));
+    } else {
+      const pass=tr.reward!=null&&tr.reward>=1;
+      gg.appendChild(el("rect",{x,y:TOP+off*scale-3,width:COLW-2,height:3,fill:pass?"#16a34a":(tr.reward!=null?"#dc2626":"#9ca3af")}));
+    }
     gg.style&&(gg.style.cursor="pointer");
     gg.addEventListener("mousemove",e=>showTrialTip(e,tr,i));
     gg.addEventListener("mouseleave",()=>tip.style.opacity=0);
@@ -231,8 +240,10 @@ function showBarTip(e,b){
 }
 function showTrialTip(e,tr,i){
   const pass=tr.reward!=null&&tr.reward>=1;
-  tip.innerHTML=`<b>trial #${i+1}</b> · ${tr.name}<br>
-    <span class="k">reward</span> <span class="${pass?'g':'r'}">${tr.reward==null?'?':tr.reward}${pass?' ✓ pass':(tr.reward!=null?' ✗ fail':'')}</span> &nbsp; <span class="k">turns</span> ${tr.turns==null?'?':tr.turns}<br>
+  const badge=tr.cancelled?` <span class="pill" style="background:#d9770622;color:#d97706">CANCELLED</span>`:"";
+  const rewardTxt=tr.reward==null?(tr.cancelled?'— flushed on abort':'?'):tr.reward;
+  tip.innerHTML=`<b>trial #${i+1}</b> · ${tr.name}${badge}<br>
+    <span class="k">reward</span> <span class="${pass?'g':'r'}">${rewardTxt}${pass?' ✓ pass':(tr.reward!=null?' ✗ fail':'')}</span> &nbsp; <span class="k">turns</span> ${tr.turns==null?'?':tr.turns}<br>
     <span class="k">spawn</span> ${fmt(tr.spawn)}s &nbsp; <span class="k">install</span> ${fmt(tr.install)}s<br>
     <span class="k">agent_run</span> ${fmt(tr.agent_run)}s &nbsp; <span class="k">verifier</span> ${fmt(tr.verifier)}s<br>
     <span class="k">total</span> ${fmt(tr.total)}s &nbsp; <span class="k">starts @</span> +${fmt(tr.offset)}s`;
@@ -255,6 +266,7 @@ function buildLegend(){
     row(PCOL.agent_run,"bash exec — CPU (tool commands in sandbox)"),
     row(PCOL.verifier,"verifier (pytest)"),
     row(PCOL.teardown,"teardown"),
+    `<div class="row"><span class="sw" style="background:transparent;border:1.5px dashed #d97706"></span>cancelled — flushed on abort (outline only)</div>`,
   ].join("");
   // Hardware view colors
   const hwRows=[

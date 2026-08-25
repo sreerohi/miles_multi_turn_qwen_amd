@@ -152,8 +152,22 @@ async def abort(args) -> None:
     available.
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
-    instance_id = getattr(args, "session_server_instance_id", None)
-    if not agent_server_url or not instance_id:
+
+    # The driver's args carry the PLURAL {port: uuid} map (router_manager sets it on
+    # the driver); the singular attr only ever exists on the session-server child, so
+    # reading it here was always None and the flush was silently skipped.
+    instance_ids = set((getattr(args, "session_server_instance_ids", None) or {}).values())
+    singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
+    if singular:
+        instance_ids.add(singular)
+
+    logger.warning(
+        "[REPRO abort-hook] entered: agent_server_url=%r instance_ids=%r -> %s",
+        agent_server_url,
+        sorted(instance_ids),
+        "NOOP(guard-return: NO FLUSH)" if (not agent_server_url or not instance_ids) else "WILL-FLUSH",
+    )
+    if not agent_server_url or not instance_ids:
         return
 
     headers = None
@@ -161,27 +175,18 @@ async def abort(args) -> None:
     if admin_secret:
         headers = {"Authorization": f"Bearer {admin_secret}"}
 
-    try:
-        result = await post(
-            f"{agent_server_url.rstrip('/')}/flush",
-            {"session_server_instance_id": instance_id},
-            max_retries=3,
-            headers=headers,
-        )
-        logger.info(f"Flushed agent server {agent_server_url}: {result}")
-    except Exception as e:
-        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
-
-    # Force-close the miles session-server httpx client so any in-flight
-    # collect_samples or DELETE /sessions calls unblock immediately.
-    # Without this, a CLOSE_WAIT connection from the session server never
-    # triggers epoll (the asyncio loop never wakes for it) causing abort()
-    # to hang indefinitely. Harbor /run connections are handled cleanly by
-    # Harbor's own task.cancel() → HTTP response path and don't need this.
-    try:
-        from miles.utils import http_utils as _http_utils
-        if _http_utils._http_client is not None:
-            await _http_utils._http_client.aclose()
-            _http_utils._http_client = None
-    except Exception:
-        pass
+    for instance_id in instance_ids:
+        try:
+            result = await post(
+                f"{agent_server_url.rstrip('/')}/flush",
+                {"session_server_instance_id": instance_id},
+                max_retries=3,
+                headers=headers,
+            )
+            logger.warning(
+                "[REPRO abort-hook] Flushed agent server %s (id=%s): %s", agent_server_url, instance_id, result
+            )
+        except Exception as e:
+            logger.warning(
+                "[REPRO abort-hook] Failed to flush agent server %s (id=%s): %s", agent_server_url, instance_id, e
+            )
