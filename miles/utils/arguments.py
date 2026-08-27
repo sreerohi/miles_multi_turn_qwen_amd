@@ -2547,6 +2547,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Auto-allocates a single port if not set.",
             )
             parser.add_argument(
+                "--session-server-endpoint",
+                type=str,
+                default="openai",
+                choices=["openai", "anthropic"],
+                help="API format the session server exposes to the agent. "
+                "'openai' (default): only POST /sessions/{id}/v1/chat/completions is registered — "
+                "existing behaviour, no other changes. "
+                "'anthropic': additionally registers POST /sessions/{id}/v1/messages so that "
+                "Anthropic-SDK clients (e.g. claude-code) are proxied through TITO tracking. "
+                "Requires --use-session-server.",
+            )
+            parser.add_argument(
                 "--tito-model",
                 type=str,
                 default="default",

@@ -80,7 +80,13 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = f"{base_url}/v1"
+    # Anthropic SDK clients (e.g. claude-code) append their own /v1, so the
+    # base_url must not carry a trailing /v1 — they would double it.
+    # OpenAI-SDK clients need the /v1 suffix to construct /v1/chat/completions.
+    if os.getenv("MILES_SESSION_ENDPOINT", "openai") == "anthropic":
+        session_url = base_url
+    else:
+        session_url = f"{base_url}/v1"
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
     if external_host:
         parsed = urlparse(session_url)

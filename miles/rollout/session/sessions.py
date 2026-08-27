@@ -91,6 +91,17 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
             body=body,
         )
 
+    if getattr(args, "session_server_endpoint", "openai") == "anthropic":
+        @app.post("/sessions/{session_id}/v1/messages")
+        async def anthropic_messages(request: Request, session_id: str):
+            body = await request.body()
+            return await core.anthropic_messages(
+                session_id,
+                method=request.method,
+                headers=dict(request.headers),
+                body=body,
+            )
+
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):
         # Starlette matches routes in registration order; keep this before session_proxy.

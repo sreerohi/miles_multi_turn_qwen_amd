@@ -311,6 +311,10 @@ class SessionCore:
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records.
 
+        Dispatches to the appropriate assembler based on the record format:
+        - ``path="/v1/chat/completions"`` → OpenAI assembler with TITO logprobs
+        - ``path="/v1/messages"``         → Anthropic assembler (no logprobs yet)
+
         Validation failures return 422; unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
@@ -318,26 +322,58 @@ class SessionCore:
         tokenizer = self.registry.tokenizer
         if not session.records:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
+
+        anthropic_path = "/v1/messages"
+        is_anthropic = all(r.path == anthropic_path for r in session.records)
+
         try:
-            samples = compute_samples_from_openai_records(
-                self.args,
-                session.records,
-                tokenizer,
-                accumulated_token_ids=metadata.get("accumulated_token_ids"),
-                max_trim_tokens=metadata.get("max_trim_tokens", 0),
-                use_addition_r3=self.use_addition_r3,
-            )
-            if max_seq_len is not None:
-                samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
-            if not samples:
-                return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
-            if self.use_addition_r3:
-                samples = [merge_samples_with_addition_r3(self.args, samples, session.records, tokenizer)]
+            if is_anthropic:
+                samples = self._collect_anthropic_samples(session, tokenizer, max_seq_len)
             else:
-                samples = [merge_samples(samples, tokenizer)]
+                samples = self._collect_openai_samples(session, metadata, tokenizer, max_seq_len)
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
+
+        if not samples:
+            return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
         return _samples_response(encode_samples(samples, metadata))
+
+    def _collect_openai_samples(self, session, metadata: dict, tokenizer, max_seq_len: int | None) -> list:
+        samples = compute_samples_from_openai_records(
+            self.args,
+            session.records,
+            tokenizer,
+            accumulated_token_ids=metadata.get("accumulated_token_ids"),
+            max_trim_tokens=metadata.get("max_trim_tokens", 0),
+            use_addition_r3=self.use_addition_r3,
+        )
+        if max_seq_len is not None:
+            samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
+        if not samples:
+            return []
+        if self.use_addition_r3:
+            return [merge_samples_with_addition_r3(self.args, samples, session.records, tokenizer)]
+        return [merge_samples(samples, tokenizer)]
+
+    def _collect_anthropic_samples(self, session, tokenizer, max_seq_len: int | None) -> list:
+        from miles.rollout.session.samples.anthropic_merge import compute_samples_from_anthropic_records
+
+        samples = compute_samples_from_anthropic_records(self.args, session.records, tokenizer)
+        if not samples:
+            return []
+        if len(samples) > 1:
+            # Multi-turn merge requires cumulative token IDs, which are not
+            # available without logprobs from /v1/messages.  Return only the
+            # last turn's sample so the trajectory is still recorded; the
+            # reward (from Harbor) is attached by the caller.
+            logger.warning(
+                "collect_samples: %d-turn Anthropic session %r — returning last turn only "
+                "(multi-turn merge requires token IDs; not yet available from /v1/messages).",
+                len(samples),
+                getattr(session, "session_id", "?"),
+            )
+            return [samples[-1]]
+        return samples
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
@@ -352,10 +388,14 @@ class SessionCore:
             session.lock.release()
         return Response(status_code=204)
 
-    async def chat_completions(
+    async def _chat_completions_inner(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
-    ) -> Response:
-        """Proxy a chat completion through the backend with TITO token tracking.
+    ) -> tuple[dict, dict, bool]:
+        """Core TITO-tracked chat completion: prepare → proxy → record.
+
+        Returns ``(result, openai_response, client_stream)`` without formatting
+        the HTTP response.  Callers use this to render the reply in whichever
+        wire format they need (OpenAI or Anthropic).
 
         Flow: prepare pretokenized input_ids (lock held briefly) → proxy to
         backend (NO lock) → validate response → update trajectory checkpoint and
@@ -400,10 +440,9 @@ class SessionCore:
             ProxyRequest(method=method, query=query), "v1/chat/completions", body=proxy_body, headers=headers
         )
 
-        # Non-200 (e.g. 400 context too long) passes through unrecorded so the
-        # agent can retry or handle the error.
+        # Non-200 (e.g. 400 context too long): return early without recording.
         if result["status_code"] != 200:
-            return proxy_result_to_response(result)
+            return result, {}, client_stream
 
         response, _, assistant_message, completion_token_ids = extract_completion(result)
 
@@ -411,7 +450,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response, client_stream)
+                return result, response, client_stream
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -419,7 +458,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return _chat_client_response(result, response, client_stream)
+                return result, response, client_stream
 
             session.update_pretokenized_state(
                 request_messages,
@@ -441,7 +480,78 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
+        return result, response, client_stream
+
+    async def chat_completions(
+        self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
+    ) -> Response:
+        """Proxy a chat completion and return an OpenAI-format HTTP response."""
+        result, response, client_stream = await self._chat_completions_inner(
+            session_id, method=method, query=query, headers=headers, body=body
+        )
+        if result["status_code"] != 200 and not response:
+            return proxy_result_to_response(result)
         return _chat_client_response(result, response, client_stream)
+
+    async def anthropic_messages(
+        self, session_id: str, *, method: str, headers: dict, body: bytes
+    ) -> Response:
+        """Proxy an Anthropic Messages API request to SGLang's native /v1/messages.
+
+        Requests are forwarded verbatim (minus ``stream``, which is faked on
+        the response side so the full reply can be stored as a record before
+        replying to the client).  No OpenAI translation — SGLang speaks
+        Anthropic natively.
+
+        TITO prefix tracking is not applied on this path: the Anthropic
+        endpoint does not accept ``input_ids`` and does not return
+        ``output_token_logprobs``, so token-level accounting is unavailable.
+        ``collect_samples`` therefore uses the Anthropic-aware assembler
+        (``samples/anthropic_merge.py``) for sessions whose records carry
+        ``path="/v1/messages"``.
+        """
+        from miles.rollout.session.anthropic_compat import prepare_anthropic_request, render_anthropic_response
+
+        request_timestamp = time.time()
+        try:
+            anthropic_body = json.loads(body) if body else {}
+        except json.JSONDecodeError as e:
+            raise MessageValidationError(f"invalid JSON body: {e}") from e
+
+        proxy_body_dict, client_stream = prepare_anthropic_request(anthropic_body)
+        proxy_body = json.dumps(proxy_body_dict).encode()
+
+        # Proxy directly to SGLang's /v1/messages (no TITO path).
+        # Strip ?beta=true — it is an Anthropic-SDK hint, not a SGLang param.
+        proxy_headers = {**headers, "X-SMG-Routing-Key": session_id}
+        result = await self.backend.do_proxy(
+            ProxyRequest(method=method, query=""), "v1/messages", body=proxy_body, headers=proxy_headers
+        )
+
+        if result["status_code"] != 200:
+            return proxy_result_to_response(result)
+
+        try:
+            response = json.loads(result["response_body"])
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise UpstreamResponseError(f"non-JSON response from /v1/messages backend: {exc}") from exc
+
+        # Store the record so collect_samples can assemble a Sample later.
+        session = self.registry.get_session(session_id)
+        async with session.lock:
+            if not session.closing:
+                record = SessionRecord(
+                    timestamp=time.time(),
+                    request_timestamp=request_timestamp,
+                    method=method,
+                    path="/v1/messages",
+                    status_code=result["status_code"],
+                    request=proxy_body_dict,
+                    response=response,
+                )
+                session.append_record(record)
+
+        return render_anthropic_response(response, result["status_code"], client_stream)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
