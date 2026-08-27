@@ -85,6 +85,11 @@ class RolloutDataSource(DataSource):
             )
             if self.args.rollout_shuffle:
                 self.dataset.shuffle(self.epoch_id)
+            if len(self.dataset.samples) == 0:
+                raise ValueError(
+                    f"Prompt dataset is empty: {args.prompt_data!r}. "
+                    "Check that the file exists and is non-empty."
+                )
         else:
             self.dataset = None
 
